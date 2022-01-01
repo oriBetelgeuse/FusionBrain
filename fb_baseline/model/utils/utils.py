@@ -1,8 +1,20 @@
 import re
 
+import torch
 import cv2
 import numpy as np
 
+
+def box_xywh_to_xyxy(x):
+    x, y, w, h = x.unbind(-1)
+    b = [(x), (y), (x + w), (y + h)]
+    return torch.stack(b, dim=-1)
+
+
+def onehot(size, target):
+    vec = torch.zeros(size, dtype=torch.float32)
+    vec[target] = 1.
+    return vec
 
 def resize_if_need(image, max_h, max_w):
     img = image.copy()
@@ -24,14 +36,6 @@ def make_img_padding(image, max_h, max_w):
     y2 = y1 + img_h
     bg[y1:y2, x1:x2, :] = img.copy()
     return bg
-
-
-def simple_detect_lang(text):
-    if len(set('абвгдежзийклмнопрстуфхцчшщъыьэюяё').intersection(text.lower())) > 0:
-        return 'ru'
-    if len(set('abcdefghijklmnopqrstuvwxyz').intersection(text.lower())) > 0:
-        return 'en'
-    return 'other'
 
 
 class CTCLabeling:

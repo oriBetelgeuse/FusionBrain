@@ -1,5 +1,5 @@
 import torch
-from BLEU import _bleu
+from fb_baseline.fb_utils.BLEU import _bleu
 import numpy as np
 
 def eval_bleu(model, hidden_states, input_ids, beam_size, tokenizer, targets, max_length=170, path_gold='./test.gold', path_pred='./test.output'):
