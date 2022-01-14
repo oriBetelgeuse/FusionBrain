@@ -2,7 +2,6 @@ import comet_ml
 import os
 import json
 import random
-import argparse
 
 import pandas as pd
 import albumentations as A
@@ -84,7 +83,6 @@ if __name__ == '__main__':
     df_c2c.loc[train.index.to_list(), 'stage'] = 'train'
     df_c2c.loc[valid.index.to_list(), 'stage'] = 'valid'
     df_c2c.loc[test.index.to_list(), 'stage'] = 'test'
-
     # #
     # Merge in common set
     # #
@@ -270,6 +268,7 @@ if __name__ == '__main__':
                          replace_sampler_ddp=True, default_root_dir='LightningExperimentsNew/main_concat/checkpoints/',
                          logger=comet_logger, callbacks=[lr_monitor, checkpoint_callback], num_sanity_val_steps=0)
 
+    # балансеры (их стоит проверить, так как contrastive loss порой падает до 0, хоть и редко)
     train_sampler = DistributedSamplerWrapper(
         sampler=BalanceClassSampler(labels=train_dataset.get_task_labels()),
         num_replicas=WORLD_SIZE,
