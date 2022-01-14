@@ -21,11 +21,6 @@ from model.trainer import CrossAttentionTrainer, InverseAttentionTrainer
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument("training_type")
-    parser.add_argument("model_type")
-    args = parser.parse_args()
-
     # Подготовка данных и сбор в единый DataFrame
     json_marking = json.load(open('handwritten/train_labels.json', 'rb'))
     marking = []
@@ -191,31 +186,19 @@ if __name__ == '__main__':
         'num_queries': 8
     }
 
-    if args.model_type == 'cross':
-        model = CrossAttentionGPT2FusionBrain(
-            gpt_model,
-            attention_config=attention_config,
-            handwritten_config=handwritten_config,
-            vqa_config=vqa_config,
-            detection_config=detection_config
-        )
-    else:
-        model = InverseAttentionGPT2FusionBrain(
-            gpt_model,
-            handwritten_config=handwritten_config,
-            vqa_config=vqa_config,
-            detection_config=detection_config
-        )
+    model = CrossAttentionGPT2FusionBrain(
+        gpt_model,
+        attention_config=attention_config,
+        handwritten_config=handwritten_config,
+        vqa_config=vqa_config,
+        detection_config=detection_config
+    ) # InverseAttentionGPT2FusionBrain
 
     WORLD_SIZE = 8
     BATCH_SIZE = 16
 
-    if args.training_type == 'fusion':
-        df_train = df[df['stage'] == 'train']
-        df_valid = df[df['stage'] == 'valid']
-    else:
-        df_train = df[(df['task_id'] == args.training_type) & (df['stage'] == 'train')]
-        df_valid = df[(df['task_id'] == args.training_type) & (df['stage'] == 'valid')]
+    df_train = df[df['stage'] == 'train']
+    df_valid = df[df['stage'] == 'valid']
 
     train_dataset = DatasetRetriever(
         task_ids=df_train['task_id'].values,
@@ -264,10 +247,7 @@ if __name__ == '__main__':
         }
     }
 
-    if args.model_type == 'cross':
-        lightning_model = CrossAttentionTrainer(model, CONFIG, ctc_labeling)
-    else:
-        lightning_model = InverseAttentionTrainer(model, CONFIG, ctc_labeling)
+    lightning_model = CrossAttentionTrainer(model, CONFIG, ctc_labeling) # InverseAttentionTrainer(model, CONFIG, ctc_labeling)
 
     comet_logger = pl.loggers.CometLogger(
         api_key="8uucVJ9Hf7WVJuHwVz8DIA04H",
@@ -285,7 +265,7 @@ if __name__ == '__main__':
         save_top_k=3,
         mode="min",
     )
-    accelerator = 'dp' if args.model_type == 'cross' else 'ddp'
+    accelerator = 'dp' # 'ddp'
     trainer = pl.Trainer(gpus=-1, accelerator=accelerator, max_steps=CONFIG['total_steps'], check_val_every_n_epoch=1,
                          replace_sampler_ddp=True, default_root_dir='LightningExperimentsNew/main_concat/checkpoints/',
                          logger=comet_logger, callbacks=[lr_monitor, checkpoint_callback], num_sanity_val_steps=0)
@@ -295,14 +275,14 @@ if __name__ == '__main__':
         num_replicas=WORLD_SIZE,
         rank=trainer.global_rank,
         shuffle=True
-    ) if args.training_type == 'fusion' else SequentialSampler(train_dataset)
+    ) # SequentialSampler(train_dataset)
 
     valid_sampler = DistributedSamplerWrapper(
         sampler=BalanceClassSampler(labels=valid_dataset.get_task_labels()),
         num_replicas=WORLD_SIZE,
         rank=trainer.global_rank,
         shuffle=True
-    ) if args.training_type == 'fusion' else SequentialSampler(valid_dataset)
+    ) # SequentialSampler(valid_dataset)
 
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
