@@ -132,16 +132,6 @@ if __name__ == '__main__':
             'output_boxes': boxes,
             'stage': stage,
         })
-    for image_name, text_input, boxes, stage in zip(df_eval_detection['path'], df_eval_detection['req'],
-                                                    df_eval_detection['boxes'], df_eval_detection['stage']):
-        dataset.append({
-            'task_id': 'detection',
-            'modality': 'image+text',
-            'input_image': image_name,
-            'input_text': text_input,
-            'output_boxes': boxes,
-            'stage': stage,
-        })
 
     random.shuffle(dataset)
     df = pd.DataFrame(dataset)
