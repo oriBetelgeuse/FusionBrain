@@ -8,6 +8,7 @@ import torch.nn.functional as F
 from modules.layers import ResnetBackbone, CrossAttentionLayer, MLP
 
 
+# в базовом классе определяем только handwritten и c2c
 class BaseGPT2FusionBrain(nn.Module):
 
     def __init__(self, gpt_model, handwritten_config, **freeze_gpt_kwargs):
@@ -179,6 +180,7 @@ class BaseGPT2FusionBrain(nn.Module):
         print('               %:', round(trainable_params / all_params * 100, 2))
 
 
+# вариант модели со слоями cross attention. img и text проходят через gpt независимо
 class CrossAttentionGPT2FusionBrain(BaseGPT2FusionBrain):
 
     def __init__(self,
@@ -193,7 +195,9 @@ class CrossAttentionGPT2FusionBrain(BaseGPT2FusionBrain):
         ## zhOD[image, text] and VQA[image, text] layers:
         self.attention_config = attention_config
         self.backbone = ResnetBackbone(pretrained=True)
+        # переводит hidden state resnet18 в hidden state gpt2
         self.input_proj = nn.Conv2d(self.backbone.num_channels, self.embedding_size, kernel_size=1)
+        # линейные слои после gpt2 для сведения img и text в одно пространоство признаков и подсчёта contrastive loss
         self.text_projection = nn.Linear(self.embedding_size, self.embedding_size)
         self.image_projection = nn.Linear(self.embedding_size, self.embedding_size)
         self.cross_attention = nn.ModuleList([
@@ -209,7 +213,8 @@ class CrossAttentionGPT2FusionBrain(BaseGPT2FusionBrain):
 
         # detection[image, text] input/output layers:
         self.detection_config = detection_config
-        self.detection_pool = nn.AdaptiveMaxPool2d((detection_config["num_queries"], None))
+        self.max_boxes = detection_config['max_boxes']
+        # переводим hidden state в 4 координаты + вероятность наличия бокса
         self.bbox_embed = MLP(self.embedding_size, self.embedding_size, 5, detection_config['num_mlp_layers'])
         print('=== DETECTION TASK ===')
         self._calculate_trainable_params([
@@ -280,10 +285,12 @@ class CrossAttentionGPT2FusionBrain(BaseGPT2FusionBrain):
         norm_img_emb = F.normalize(img_embs.mean(-2), p=2, dim=-1)
         norm_tokens_emb = F.normalize(tokens_embs.mean(-2), p=2, dim=-1)
 
+        # берём последние max_boxes элементов последовательность как содержащих наибольшую информацию
+        # производим эту операцию до cross attention, так как там img_embs видят только текст
+        img_embs = img_embs[:, -self.max_boxes:]
         text_masks = attention_masks.type(torch.bool)
         for layer in self.cross_attention:
             img_embs, _ = layer(img_embs, tokens_embs, ~text_masks)
-        img_embs = self.detection_pool(img_embs)
 
         output_logits = self.bbox_embed(img_embs).sigmoid()
         out = {
@@ -295,6 +302,7 @@ class CrossAttentionGPT2FusionBrain(BaseGPT2FusionBrain):
         return out
 
 
+# вариант модели с пердварительным объединением img и text в одну последовательность
 class InverseAttentionGPT2FusionBrain(BaseGPT2FusionBrain):
 
     def __init__(self,
@@ -341,6 +349,7 @@ class InverseAttentionGPT2FusionBrain(BaseGPT2FusionBrain):
         self._calculate_common_params()
         print('=== === === === ===')
 
+    # для vqa первой идёт img, а затем text
     def forward_vqa(self, images, tokens):
         back_out = self.backbone(images)
         img_embeddings = self.input_proj(back_out).flatten(-2).transpose(-1, -2)
@@ -356,6 +365,7 @@ class InverseAttentionGPT2FusionBrain(BaseGPT2FusionBrain):
 
         return output_logits
 
+    # для zsod первым идёт text, а затем img
     def forward_detection(self, images, tokens):
         back_out = self.backbone(images)
         img_embeddings = self.input_proj(back_out).flatten(-2).transpose(-1, -2)
@@ -366,6 +376,7 @@ class InverseAttentionGPT2FusionBrain(BaseGPT2FusionBrain):
         gpt_out = self.gpt_model(inputs_embeds=embedings).last_hidden_state
         #####
 
+        # берём последние max_boxes элементов последовательность как содержащих наибольшую информацию
         output_logits = self.bbox_embed(gpt_out[:, -self.max_boxes:]).sigmoid()
         out = {
             'pred_logits': output_logits,

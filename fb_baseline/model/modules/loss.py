@@ -43,6 +43,7 @@ class DetectionCriterion(nn.Module):
         super().__init__()
         self.losses = losses
 
+    # возвращает индексы предсказанных боксов, у которых IoU с ground truth наибольшее
     def _get_idx(self, pred_boxes, targets):
         boxes_idx = list(map(
             lambda x: torch.argmax(generalized_box_iou(box_xywh_to_xyxy(x[0]), box_xywh_to_xyxy(x[1][:, :-1])), -1),
@@ -51,8 +52,9 @@ class DetectionCriterion(nn.Module):
 
         return boxes_idx
 
+    #  для боксов, полученных при помощи _get_idx предсказываем 1, для остальных 0
     def loss_classification(self, outputs, targets, boxes_idx, num_boxes):
-        pred_probs = [t[:, -1] for t in outputs["pred_logits"]]
+        pred_probs = [t[:, -1] for t in outputs["pred_logits"]] # пятая (последняя) координата - вероятность наличия бокса
         target_labels = [torch.zeros_like(pred_prob) for pred_prob in pred_probs]
         for i, idx in enumerate(boxes_idx):
             target_labels[i][idx] = 1.
@@ -63,6 +65,7 @@ class DetectionCriterion(nn.Module):
 
         return {"loss_classification": loss}
 
+    # L1 и GIoU между боксами, полученными при помощи _get_idx и ground truth
     def loss_boxes(self, outputs, targets, boxes_idx, num_boxes):
         src_boxes = torch.cat([t[idx][:, :-1] for t, idx in zip(outputs["pred_logits"], boxes_idx)], dim=0)
         target_boxes = torch.cat([t for t in targets], dim=0)

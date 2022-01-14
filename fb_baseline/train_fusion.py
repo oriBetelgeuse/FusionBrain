@@ -4,7 +4,6 @@ import json
 import random
 import argparse
 
-import numpy as np
 import pandas as pd
 import albumentations as A
 from sklearn.model_selection import StratifiedKFold, train_test_split
@@ -198,7 +197,7 @@ if __name__ == '__main__':
     }
 
     detection_config = {
-        'num_mlp_layers': 3,
+        'num_mlp_layers': 1,
         'num_queries': 8
     }
 

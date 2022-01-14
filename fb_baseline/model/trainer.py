@@ -14,6 +14,7 @@ class BaseTrainer(pl.LightningModule):
         super().__init__()
         self.model = model
         self.model.freeze_gpt(**config['freeze'])
+        # костыльная подгрузка весов
         if config['weights_path'] is not None:
             state_dict = torch.load(config['weights_path'])['state_dict']
             state_dict = OrderedDict({key[6:]: value for key, value in state_dict.items()})
@@ -122,8 +123,7 @@ class CrossAttentionTrainer(BaseTrainer):
         attention_masks = detection_attention_masks.to(self.device, dtype=torch.long)
         boxes = [boxes_per_label.to(self.device, dtype=torch.float) for boxes_per_label in boxes]
         detection_outputs = self.model('detection', images=images, tokens=input_ids, attention_masks=attention_masks)
-        local_detection_proj_tokens, local_detection_proj_queries = detection_outputs['proj_tokens'], detection_outputs[
-            'proj_queries']
+        local_detection_proj_tokens, local_detection_proj_queries = detection_outputs['proj_tokens'], detection_outputs['proj_queries']
 
         local_bath_size = detection_outputs['pred_logits'].shape[0]
         detection_loss = self.detection_criterion(
@@ -181,9 +181,11 @@ class CrossAttentionTrainer(BaseTrainer):
             local_proj_tokens.append(detection_proj['local_tokens'])
             local_proj_queries.append(detection_proj['local_queries'])
 
+        # считаем contrastive loss, если в батче есть zsod или vqa
         if len(boxes) > 0 or len(labels) > 0:
             local_proj_tokens = torch.cat(local_proj_tokens)
             local_proj_queries = torch.cat(local_proj_queries)
+            # собираем скрытыве вектора со всех gpu
             global_proj_tokens, global_proj_queries = self._all_gather_proj(local_proj_tokens, local_proj_queries)
 
             contrastive_loss = loss_contrastive(
