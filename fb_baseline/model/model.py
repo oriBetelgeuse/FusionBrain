@@ -5,7 +5,7 @@ from torch import nn
 from einops import rearrange
 import torch.nn.functional as F
 
-from modules.layers import ResnetBackbone, CrossAttentionLayer, MLP
+from .modules.layers import ResnetBackbone, CrossAttentionLayer, MLP
 
 
 # в базовом классе определяем только handwritten и c2c

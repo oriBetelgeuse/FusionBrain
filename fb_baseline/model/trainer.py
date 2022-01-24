@@ -5,7 +5,7 @@ import torch
 from torch import nn
 import pytorch_lightning as pl
 
-from modules.loss import DetectionCriterion, loss_contrastive
+from .modules.loss import DetectionCriterion, loss_contrastive
 
 
 class BaseTrainer(pl.LightningModule):
