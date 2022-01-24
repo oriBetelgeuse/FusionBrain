@@ -181,7 +181,7 @@ if __name__ == '__main__':
 
     detection_config = {
         'num_mlp_layers': 1,
-        'num_queries': 8
+        'max_boxes': 8
     }
 
     model = CrossAttentionGPT2FusionBrain(
@@ -199,6 +199,9 @@ if __name__ == '__main__':
     df_valid = df[df['stage'] == 'valid']
 
     train_dataset = DatasetRetriever(
+        '/home/jovyan/vladimir/fb_baseline/private_fb/HTR/images/',
+        '/home/jovyan/vladimir/fb_baseline/private_fb/VQA/images/',
+        '/home/jovyan/vladimir/fb_baseline/private_fb/zsOD/images/',
         task_ids=df_train['task_id'].values,
         input_images=df_train['input_image'].values,
         input_texts=df_train['input_text'].values,
@@ -212,6 +215,9 @@ if __name__ == '__main__':
         task_augs=task_augs,
     )
     valid_dataset = DatasetRetriever(
+        '/home/jovyan/vladimir/fb_baseline/private_fb/HTR/images/',
+        '/home/jovyan/vladimir/fb_baseline/private_fb/VQA/images/',
+        '/home/jovyan/vladimir/fb_baseline/private_fb/zsOD/images/',
         task_ids=df_valid['task_id'].values,
         input_images=df_valid['input_image'].values,
         input_texts=df_valid['input_text'].values,

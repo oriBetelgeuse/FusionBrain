@@ -10,6 +10,9 @@ from ..utils.utils import resize_if_need, make_img_padding
 class DatasetRetriever(Dataset):
 
     def __init__(self,
+                 handwritten_images,
+                 vqa_images,
+                 detection_images,
                  task_ids,
                  input_images,
                  input_texts,
@@ -22,6 +25,10 @@ class DatasetRetriever(Dataset):
                  vqa_max_tokens_length,
                  task_augs=None):
         super().__init__()
+        self.handwritten_images = handwritten_images
+        self.vqa_images = vqa_images
+        self.detection_images = detection_images
+
         self.task_ids = task_ids
 
         self.input_images = input_images
@@ -77,7 +84,7 @@ class DatasetRetriever(Dataset):
         }
 
     def get_handwritten_sample(self, idx):
-        path = 'handwritten/images/' + self.input_images[idx]
+        path = os.path.join(self.handwritten_images, self.input_images[idx])
         image = cv2.imread(path)
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         image, _ = self.resize_image(image)
@@ -102,7 +109,7 @@ class DatasetRetriever(Dataset):
         }
 
     def get_detection_sample(self, idx):
-        path = 'russian_detection_vqa/images/' + self.input_images[idx]
+        path = os.path.join(self.detection_images, self.input_images[idx])
         image = cv2.imread(path)
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         image_h, image_w, _ = image.shape
@@ -157,7 +164,7 @@ class DatasetRetriever(Dataset):
         }
 
     def get_vqa_sample(self, idx):
-        path = 'russian_detection_vqa/images/' + self.input_images[idx]
+        path = os.path.join(self.vqa_images, self.input_images[idx])
         image = cv2.imread(path)
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 

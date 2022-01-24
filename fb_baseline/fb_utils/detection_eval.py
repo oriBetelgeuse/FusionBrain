@@ -14,13 +14,13 @@ def cross_detection_evaluation(model, images, input_ids, attention_masks, cor_tr
         norm_gpt_text = F.normalize(gpt_text, p=2, dim=-1)
         corr_matrix = torch.matmul(norm_gpt_img, norm_gpt_text.transpose(-1, -2))
         cut_gpt_img = gpt_img[corr_matrix.mean(-1) > cor_treshhold].unsqueeze(0)
-        if cut_gpt_img[1] == 0:
+        if cut_gpt_img.shape[1] == 0:
             boxes.append(torch.tensor([]).to(cut_gpt_img.device))
             continue
+        cut_gpt_img = cut_gpt_img[:, -model.max_boxes:]
         text_mask = attention_mask.type(torch.bool)
         for layer in model.cross_attention:
             cut_gpt_img, _ = layer(cut_gpt_img, gpt_text, ~text_mask)
-        cut_gpt_img = model.detection_pool(cut_gpt_img)
 
         output_logits = model.bbox_embed(cut_gpt_img).sigmoid()
         output_boxes = output_logits[output_logits[:, :, -1] > treshhold][:, :-1]
@@ -40,7 +40,7 @@ def inverse_detection_evaluation(model, images, input_ids, treshhold):
         embedings = torch.cat((tokens_embeddings, img_embeddings), dim=1)
         gpt_out = model.gpt_model(inputs_embeds=embedings).last_hidden_state
 
-        output_logits = model.bbox_embed(gpt_out[:, -8:]).sigmoid()
+        output_logits = model.bbox_embed(gpt_out[:, -model.max_boxes:]).sigmoid()
         output_boxes = output_logits[output_logits[:, :, -1] > treshhold][:, :-1]
         boxes.append(output_boxes)
 
