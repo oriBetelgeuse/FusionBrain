@@ -10,7 +10,7 @@ from .modules.loss import DetectionCriterion, loss_contrastive
 
 class BaseTrainer(pl.LightningModule):
 
-    def __init__(self, model, config, ctc_labeling):
+    def __init__(self, model, config, gpt_tokenizer, ctc_labeling):
         super().__init__()
         self.model = model
         self.model.freeze_gpt(**config['freeze'])
@@ -26,7 +26,7 @@ class BaseTrainer(pl.LightningModule):
         self.c2c_criterion = nn.CrossEntropyLoss()
         self.detection_criterion = DetectionCriterion(config['detection_losses'])
         self.detection_losses_weights = config['detection_losses_weights']
-        self.vqa_criterion = nn.CrossEntropyLoss(ignore_index=config['ignore_index'])
+        self.vqa_criterion = nn.CrossEntropyLoss(ignore_index=gpt_tokenizer.pad_token_id)
 
     def forward(self, task_id, **kwargs):
         out = self.model(task_id, **kwargs)

@@ -1,0 +1,55 @@
+common:
+  image_size: 224
+
+data:
+  batch_size: 224
+  num_workers: 8
+  world_size: 32
+  detection:
+    requests: "/home/jovyan/vladimir/fusion_brain/data/detection_vqa/zsod_requests.json"
+    images: "/home/jovyan/vladimir/fusion_brain/data/detection_vqa/images/"
+    max_request_tokens_length: 21
+  vqa:
+    questions: "/home/jovyan/vladimir/fusion_brain/data/detection_vqa/questions.json"
+    answers: "/home/jovyan/vladimir/fusion_brain/data/detection_vqa/answers.json"
+    images: "/home/jovyan/vladimir/fusion_brain/data/detection_vqa/images/"
+    max_vqa_tokens_length: 21
+
+model:
+  gpt_model: "gpt2-medium"
+  detection:
+    num_mlp_layers: 3
+    max_boxes: 8
+
+trainer:
+  gpus: 1
+  accelerator: "horovod"
+  lr: 0.000008
+  max_lr: 0.00001
+  pct_start: 0.1
+  final_div_factor: 1000
+  total_steps: 1000000
+  weights_path: null
+  detection_losses: ['boxes', 'classification']
+  detection_losses_weights: [1., 1., 1.]
+  freeze:
+    freeze_pos: false
+    freeze_ln: false
+    freeze_attn: false
+    freeze_ff: false
+    freeze_other: false
+
+logger:
+  commet:
+    save_dir: "/home/jovyan/vladimir/fusion_brain/experiments/detection_vqa_concat/logs"
+    project_name: "fusion_brain"
+    experiment_name: "big_data_fusion_concat_1"
+
+model_checkpoint:
+  filename: "weight-{epoch:02d}"
+  monitor: "valid_total_loss"
+  mode: "min"
+  save_top_k: 10
+  every_n_train_steps: 20000
+  dirpath: "/home/jovyan/vladimir/fusion_brain/experiments/detection_vqa_concat/checkpoints/"
+
