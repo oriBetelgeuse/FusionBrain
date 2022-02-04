@@ -12,11 +12,11 @@ import pytorch_lightning as pl
 from catalyst.data import BalanceClassSampler, DistributedSamplerWrapper
 from transformers import GPT2Model, GPT2Tokenizer
 
-from fb_utils.utils import simple_detect_lang
-from model.utils.utils import CTCLabeling
-from model.dataset.dataset import DatasetRetriever, fb_collate_fn
-from model.model import CrossAttentionGPT2FusionBrain, InverseAttentionGPT2FusionBrain
-from model.trainer import CrossAttentionTrainer, InverseAttentionTrainer
+from .fb_utils.utils import simple_detect_lang
+from .model.utils.utils import CTCLabeling
+from .model.dataset.dataset import DatasetRetriever, fb_collate_fn
+from .model.model import CrossAttentionGPT2FusionBrain, InverseAttentionGPT2FusionBrain
+from .model.trainer import CrossAttentionTrainer, InverseAttentionTrainer
 
 
 if __name__ == '__main__':

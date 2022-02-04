@@ -12,11 +12,11 @@ from catalyst.data import BalanceClassSampler, DistributedSamplerWrapper
 from transformers import GPT2Model, GPT2Tokenizer
 
 from .custom_horovod_plugin import CustomHorovodPlugin
-from fb_utils.utils import simple_detect_lang
-from model.utils.utils import CTCLabeling
-from model.dataset.dataset import DatasetRetriever, fb_collate_fn
-from model.model import InverseAttentionGPT2FusionBrain
-from model.trainer import InverseAttentionTrainer
+from .fb_utils.utils import simple_detect_lang
+from .model.utils.utils import CTCLabeling
+from .model.dataset.dataset import DatasetRetriever, fb_collate_fn
+from .model.model import InverseAttentionGPT2FusionBrain
+from .model.trainer import InverseAttentionTrainer
 
 
 def run_train(conf):
@@ -98,7 +98,7 @@ def run_train(conf):
     CHARS = ' !"#&\'()*+,-./0123456789:;<=>?ABCDEFGHIJKLMNOPQRSTUVWXYZ' + \
             '[]_abcdefghijklmnopqrstuvwxyz|}ЁАБВГДЕЖЗИКЛМНОПРСТУФХЦЧШЩЫЭЮЯабвгдежзийклмнопрстуфхцчшщъыьэюяё№'
     ctc_labeling = CTCLabeling(CHARS)
-    model_name = conf.common.gpt_model
+    model_name = conf.model.gpt_model
     gpt_tokenizer = GPT2Tokenizer.from_pretrained(model_name, bos_token='<s>',
                                                   eos_token='</s>', pad_token='<pad>', unk_token='<|UNKNOWN|>',
                                                   sep_token='<|SEP|>')
@@ -139,8 +139,8 @@ def run_train(conf):
         ctc_labeling=ctc_labeling,
         tokenizer=gpt_tokenizer,
         stage='train',
-        max_request_tokens_length=conf.detection.max_request_tokens_length,
-        vqa_max_tokens_length=conf.vqa.max_vqa_tokens_length,
+        max_request_tokens_length=conf.data.detection.max_request_tokens_length,
+        vqa_max_tokens_length=conf.data.vqa.max_vqa_tokens_length,
         task_augs=task_augs,
     )
     valid_dataset = DatasetRetriever(
@@ -155,8 +155,8 @@ def run_train(conf):
         ctc_labeling=ctc_labeling,
         tokenizer=gpt_tokenizer,
         stage='valid',
-        max_request_tokens_length=conf.detection.max_request_tokens_length,
-        vqa_max_tokens_length=conf.vqa.max_vqa_tokens_length,
+        max_request_tokens_length=conf.data.detection.max_request_tokens_length,
+        vqa_max_tokens_length=conf.data.vqa.max_vqa_tokens_length,
         task_augs=task_augs,
     )
 
@@ -165,7 +165,7 @@ def run_train(conf):
     comet_logger = pl.loggers.CometLogger(
         api_key="8uucVJ9Hf7WVJuHwVz8DIA04H",
         workspace=os.environ.get("COMET_WORKSPACE"),
-        **conf.commet.logger
+        **conf.logger.commet
     )
     callbacks = [
         pl.callbacks.LearningRateMonitor(logging_interval='step'),
@@ -176,7 +176,7 @@ def run_train(conf):
         backward_passes_per_step = 1
         plugins = [CustomHorovodPlugin(backward_passes_per_step=backward_passes_per_step)]
 
-    trainer = pl.Trainer(gpus=conf.trainer.gpus, accelerator=conf.trainer.accelerator, max_steps=conf.trainer.config.total_steps,
+    trainer = pl.Trainer(gpus=conf.trainer.gpus, accelerator=conf.trainer.accelerator, max_steps=conf.trainer.total_steps,
                          check_val_every_n_epoch=1, replace_sampler_ddp=True, default_root_dir=conf.model_checkpoint.dirpath,
                          plugins=plugins, logger=comet_logger, callbacks=callbacks, num_sanity_val_steps=0)
 
