@@ -27,7 +27,7 @@ class LabelSmoothing(nn.Module):
         if self.training:
             x = x.float()
             target = target.float()
-            logprobs = torch.nn.functional.log_softmax(x, dim = -1)
+            logprobs = torch.nn.functional.log_softmax(x, dim=-1)
             nll_loss = -logprobs * target
             nll_loss = nll_loss.sum(-1)
             smooth_loss = -logprobs.mean(dim=-1)
@@ -46,7 +46,7 @@ class DetectionCriterion(nn.Module):
     # возвращает индексы предсказанных боксов, у которых IoU с ground truth наибольшее
     def _get_idx(self, pred_boxes, targets):
         boxes_idx = list(map(
-            lambda x: torch.argmax(generalized_box_iou(box_xywh_to_xyxy(x[0]), box_xywh_to_xyxy(x[1][:, :-1])), -1),
+            lambda x: torch.argmax(generalized_box_iou(box_xywh_to_xyxy(x[0]), box_xywh_to_xyxy(x[1])), -1),
             zip(targets, pred_boxes)
         ))
 
@@ -54,7 +54,7 @@ class DetectionCriterion(nn.Module):
 
     #  для боксов, полученных при помощи _get_idx предсказываем 1, для остальных 0
     def loss_classification(self, outputs, targets, boxes_idx, num_boxes):
-        pred_probs = [t[:, -1] for t in outputs["pred_logits"]] # пятая (последняя) координата - вероятность наличия бокса
+        pred_probs = outputs["pred_classes"]
         target_labels = [torch.zeros_like(pred_prob) for pred_prob in pred_probs]
         for i, idx in enumerate(boxes_idx):
             target_labels[i][idx] = 1.
@@ -67,7 +67,7 @@ class DetectionCriterion(nn.Module):
 
     # L1 и GIoU между боксами, полученными при помощи _get_idx и ground truth
     def loss_boxes(self, outputs, targets, boxes_idx, num_boxes):
-        src_boxes = torch.cat([t[idx][:, :-1] for t, idx in zip(outputs["pred_logits"], boxes_idx)], dim=0)
+        src_boxes = torch.cat([t[idx] for t, idx in zip(outputs["pred_boxes"], boxes_idx)], dim=0)
         target_boxes = torch.cat([t for t in targets], dim=0)
 
         loss_bbox = F.l1_loss(src_boxes, target_boxes, reduction="none")
@@ -94,7 +94,7 @@ class DetectionCriterion(nn.Module):
         return loss_map[loss](outputs, targets, boxes_idx, num_boxes, **kwargs)
 
     def forward(self, outputs, targets):
-        boxes_idx = self._get_idx(outputs["pred_logits"], targets)
+        boxes_idx = self._get_idx(outputs["pred_boxes"], targets)
         num_boxes = float(sum([boxes.shape[0] for boxes in targets]))
 
         losses = {}

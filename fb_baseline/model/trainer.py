@@ -72,11 +72,11 @@ class BaseTrainer(pl.LightningModule):
         return c2c_loss
 
     @abstractmethod
-    def vqa_step(self):
+    def vqa_step(self, vqa_images, vqa_input_ids, vqa_attention_masks, targets):
         return
 
     @abstractmethod
-    def detection_step(self):
+    def detection_step(self, detection_images, detection_input_ids, detection_attention_masks, boxes):
         return
 
     @abstractmethod
@@ -96,20 +96,17 @@ class CrossAttentionTrainer(BaseTrainer):
         super().__init__(model, config, ctc_labeling)
         self.temperature = config['temperature']
 
-    def vqa_step(self, vqa_images, vqa_input_ids, labels, targets):
+    def vqa_step(self, vqa_images, vqa_input_ids, vqa_attention_masks, targets):
         images = vqa_images.type(torch.float32)
         input_ids = vqa_input_ids.type(torch.long)
-        labels = labels.type(torch.float32)
-        loss_mask = torch.tensor(labels.clone().detach() == 2, dtype=torch.uint8)
-        vqa_outputs = self.model('vqa', images=images, tokens=input_ids, labels=labels)
-        lm_logits = vqa_outputs['pred_logits']
-        labels = input_ids
-        shift_logits = lm_logits[..., :-1, :].contiguous()
-        shift_labels = labels[..., 1:].contiguous()
+        vqa_attention_masks = vqa_attention_masks.type(torch.long)
+        vqa_outputs = self.model('vqa', images=images, tokens=input_ids, attention_masks=vqa_attention_masks)
         local_vqa_proj_tokens, local_vqa_proj_queries = vqa_outputs['proj_tokens'], vqa_outputs['proj_queries']
-        flatten_shift_loss_mask = loss_mask[..., :-1].contiguous().view(-1)
-        ids = torch.nonzero(flatten_shift_loss_mask).view(-1)
-        vqa_loss = self.vqa_criterion(shift_logits.view(-1, shift_logits.size(-1))[ids], shift_labels.view(-1)[ids])
+        lm_logits = vqa_outputs['pred_logits']
+
+        shift_logits = lm_logits[..., :-1, :].contiguous()
+        shift_labels = input_ids[..., 1:].contiguous()
+        vqa_loss = self.vqa_criterion(shift_logits.transpose(-1, -2), shift_labels)
 
         vqa_proj = {
             'local_tokens': local_vqa_proj_tokens,
@@ -118,10 +115,10 @@ class CrossAttentionTrainer(BaseTrainer):
         return vqa_loss, vqa_proj
 
     def detection_step(self, detection_images, detection_input_ids, detection_attention_masks, boxes):
-        images = detection_images.to(self.device, dtype=torch.float32)
-        input_ids = detection_input_ids.to(self.device, dtype=torch.long)
-        attention_masks = detection_attention_masks.to(self.device, dtype=torch.long)
-        boxes = [boxes_per_label.to(self.device, dtype=torch.float) for boxes_per_label in boxes]
+        images = detection_images.type(torch.float32)
+        input_ids = detection_input_ids.type(torch.long)
+        attention_masks = detection_attention_masks.type(torch.long)
+        boxes = [boxes_per_label.type(torch.float32) for boxes_per_label in boxes]
         detection_outputs = self.model('detection', images=images, tokens=input_ids, attention_masks=attention_masks)
         local_detection_proj_tokens, local_detection_proj_queries = detection_outputs['proj_tokens'], detection_outputs['proj_queries']
 
@@ -138,7 +135,7 @@ class CrossAttentionTrainer(BaseTrainer):
 
     def model_step(self, batch, stage):
         (htr_images, encoded, encoded_length, gt_texts), (code_input_ids, code_input_labels, code_targets), (
-        vqa_images, vqa_input_ids, labels, targets), (
+        vqa_images, vqa_input_ids, vqa_attention_masks, targets), (
         detection_names, detection_images, detection_input_ids, detection_attention_masks, boxes, size) = batch
         losses = []
         metrics = {}
@@ -156,8 +153,8 @@ class CrossAttentionTrainer(BaseTrainer):
             self.log(f'{stage}_c2c_loss', metrics['c2c_loss'], on_epoch=True, prog_bar=True, logger=True)
             losses.append(c2c_loss)
 
-        if len(labels) > 0:
-            vqa_loss, vqa_proj = self.vqa_step(vqa_images, vqa_input_ids, labels, targets)
+        if len(vqa_attention_masks) > 0:
+            vqa_loss, vqa_proj = self.vqa_step(vqa_images, vqa_input_ids, vqa_attention_masks, targets)
             metrics['vqa_loss'] = vqa_loss.detach().cpu().item()
             self.log(f'{stage}_vqa_loss', metrics['vqa_loss'], on_epoch=True, prog_bar=True, logger=True)
             losses.append(vqa_loss)
@@ -182,7 +179,7 @@ class CrossAttentionTrainer(BaseTrainer):
             local_proj_queries.append(detection_proj['local_queries'])
 
         # считаем contrastive loss, если в батче есть zsod или vqa
-        if len(boxes) > 0 or len(labels) > 0:
+        if len(boxes) > 0 or len(vqa_attention_masks) > 0:
             local_proj_tokens = torch.cat(local_proj_tokens)
             local_proj_queries = torch.cat(local_proj_queries)
             # собираем скрытыве вектора со всех gpu
@@ -222,31 +219,28 @@ class CrossAttentionTrainer(BaseTrainer):
 
 class InverseAttentionTrainer(BaseTrainer):
 
-    def vqa_step(self, vqa_images, vqa_input_ids, labels, targets):
+    def vqa_step(self, vqa_images, vqa_input_ids, vqa_attention_masks, targets):
         images = vqa_images.type(torch.float32)
         input_ids = vqa_input_ids.type(torch.long)
-        labels = labels.type(torch.float32)
-        loss_mask = torch.tensor(labels.clone().detach() == 2, dtype=torch.uint8)
-        lm_logits = self.model('vqa', images=images, tokens=input_ids)
-        labels = input_ids
+        attention_masks = vqa_attention_masks.type(torch.long)
+        lm_logits = self.model('vqa', images=images, tokens=input_ids, attention_masks=attention_masks)
         shift_logits = lm_logits[..., :-1, :].contiguous()
-        shift_labels = labels[..., 1:].contiguous()
-        flatten_shift_loss_mask = loss_mask[..., :-1].contiguous().view(-1)
-        ids = torch.nonzero(flatten_shift_loss_mask).view(-1)
-        vqa_loss = self.vqa_criterion(shift_logits.view(-1, shift_logits.size(-1))[ids], shift_labels.view(-1)[ids])
+        shift_labels = input_ids[..., 1:].contiguous()
+        vqa_loss = self.vqa_criterion(shift_logits.transpose(-1, -2), shift_labels)
         return vqa_loss
 
     def detection_step(self, detection_images, detection_input_ids, detection_attention_masks, boxes):
-        images = detection_images.to(self.device, dtype=torch.float32)
-        input_ids = detection_input_ids.to(self.device, dtype=torch.long)
-        boxes = [boxes_per_label.to(self.device, dtype=torch.float) for boxes_per_label in boxes]
-        detection_outputs = self.model('detection', images=images, tokens=input_ids)
+        images = detection_images.type(torch.float32)
+        input_ids = detection_input_ids.type(torch.long)
+        attention_masks = detection_attention_masks.type(torch.long)
+        boxes = [boxes_per_label.type(torch.float32) for boxes_per_label in boxes]
+        detection_outputs = self.model('detection', images=images, tokens=input_ids, attention_masks=attention_masks)
         detection_loss = self.detection_criterion(detection_outputs, boxes)
         return detection_loss
 
     def model_step(self, batch, stage):
         (htr_images, encoded, encoded_length, gt_texts), (code_input_ids, code_input_labels, code_targets), (
-        vqa_images, vqa_input_ids, labels, targets), (
+        vqa_images, vqa_input_ids, vqa_attention_masks, targets), (
         detection_names, detection_images, detection_input_ids, detection_attention_masks, boxes, size) = batch
         losses = []
         metrics = {}
@@ -262,8 +256,8 @@ class InverseAttentionTrainer(BaseTrainer):
             self.log(f'{stage}_c2c_loss', metrics['c2c_loss'], on_epoch=True, prog_bar=True, logger=True)
             losses.append(c2c_loss)
 
-        if len(labels) > 0:
-            vqa_loss = self.vqa_step(vqa_images, vqa_input_ids, labels, targets)
+        if len(vqa_attention_masks) > 0:
+            vqa_loss = self.vqa_step(vqa_images, vqa_input_ids, vqa_attention_masks, targets)
             metrics['vqa_loss'] = vqa_loss.detach().cpu().item()
             self.log(f'{stage}_vqa_loss', metrics['vqa_loss'], on_epoch=True, prog_bar=True, logger=True)
             losses.append(vqa_loss)
@@ -282,6 +276,7 @@ class InverseAttentionTrainer(BaseTrainer):
             losses.append(sum_detection_losses)
 
         loss = sum(losses)
-        self.log(f'{stage}_total_loss', loss, on_epoch=True, prog_bar=True, logger=True)
+        metrics['total_loss'] = loss.detach().cpu().item()
+        self.log(f'{stage}_total_loss', metrics['total_loss'], on_epoch=True, prog_bar=True, logger=True)
 
         return {'loss': loss, 'log': metrics}

@@ -1,3 +1,4 @@
+import os
 import cv2
 import numpy as np
 import torch
@@ -22,7 +23,8 @@ class DatasetRetriever(Dataset):
                  tokenizer,
                  stage,
                  max_request_tokens_length,
-                 vqa_max_tokens_length,
+                 max_question_tokens_length,
+                 max_answer_tokens_length,
                  task_augs=None):
         super().__init__()
         self.handwritten_images = handwritten_images
@@ -52,7 +54,8 @@ class DatasetRetriever(Dataset):
         self.output_boxes = output_boxes
 
         # vqa[image, text]:
-        self.vqa_max_tokens_length = vqa_max_tokens_length
+        self.max_question_tokens_length = max_question_tokens_length
+        self.max_answer_tokens_length = max_answer_tokens_length
 
     def __getitem__(self, idx):
         task_id = self.task_ids[idx]
@@ -128,8 +131,8 @@ class DatasetRetriever(Dataset):
         if self.stage == 'train' or self.stage == 'valid':
             input_text = self.input_texts[idx]
             input_tokens = self.tokenizer.encode_plus(input_text)
-            input_tokens['input_ids'] = input_tokens['input_ids'][:21]
-            input_tokens['attention_mask'] = input_tokens['attention_mask'][:21]
+            input_tokens['input_ids'] = input_tokens['input_ids'][:self.max_request_tokens_length]
+            input_tokens['attention_mask'] = input_tokens['attention_mask'][:self.max_request_tokens_length]
             pad_len = self.max_request_tokens_length - len(input_tokens['input_ids'])
             input_tokens['input_ids'] += [self.tokenizer.pad_token_id] * pad_len
             input_tokens['attention_mask'] += [0] * pad_len
@@ -181,19 +184,20 @@ class DatasetRetriever(Dataset):
         input_text = self.input_texts[idx]
         input_tokens = self.tokenizer.encode(input_text)
         output_text = self.output_texts[idx]
-        output_tokens = self.tokenizer.encode(output_text)
 
         if self.stage == 'train' or self.stage == 'valid':
-            input_tokens, output_tokens = input_tokens[:12], output_tokens[:7]
-            input_ids = input_tokens + [self.tokenizer.bos_token_id] + output_tokens + [self.tokenizer.eos_token_id]
-            labels = [1] * len(input_tokens) + [2] * (len(output_tokens) + 1) + [0]
+            output_tokens = self.tokenizer.encode(output_text)
+            input_tokens = input_tokens[:self.max_question_tokens_length]
+            output_tokens = output_tokens[:self.max_answer_tokens_length]
+            input_ids = [self.tokenizer.bos_token_id] + input_tokens + [self.tokenizer.sep_token_id] + output_tokens + [self.tokenizer.eos_token_id]
+            attention_mask = [1] * (len(input_tokens) + len(output_tokens) + 3)
 
-            pad_len = self.vqa_max_tokens_length - len(input_ids)
+            pad_len = self.max_question_tokens_length + self.max_answer_tokens_length - len(input_ids)
             input_ids += [self.tokenizer.pad_token_id] * pad_len
-            labels += [0] * pad_len
+            attention_mask += [0] * pad_len
         else:
-            input_ids = input_tokens + [self.tokenizer.bos_token_id]
-            labels = [1] * len(input_tokens) + [2]
+            input_ids = [self.tokenizer.bos_token_id] + input_tokens + [self.tokenizer.sep_token_id]
+            attention_mask = [1] * (len(input_tokens) + 2)
         ##########
 
         return {
@@ -201,7 +205,7 @@ class DatasetRetriever(Dataset):
             'image_name': image_name,
             'image': image,
             'input_ids': torch.tensor(input_ids),
-            'labels': torch.tensor(labels),
+            'attention_mask': torch.tensor(attention_mask),
             'target': output_text
         }
 
@@ -247,7 +251,7 @@ def fb_collate_fn(batch):
     """ fusion brain collate fn """
     encoded, encoded_length, htr_images, gt_texts = [], [], [], []  # handwritten[image]
     code_input_ids, code_input_labels, code_targets = [], [], []  # code
-    vqa_images, vqa_input_ids, labels, targets = [], [], [], []  # vqa[image, text]
+    vqa_images, vqa_input_ids, vqa_attention_masks, targets = [], [], [], []  # vqa[image, text]
     detection_names, detection_images, detection_input_ids, detection_attention_masks, boxes, size = [], [], [], [], [], []  # detection[image, text]
 
     for i, sample in enumerate(batch):
@@ -270,7 +274,7 @@ def fb_collate_fn(batch):
         elif sample['task_id'] == 'vqa':
             vqa_images.append(sample['image'])
             vqa_input_ids.append(sample['input_ids'])
-            labels.append(sample['labels'])
+            vqa_attention_masks.append(sample['labels'])
             targets.append(sample['target'])
 
     if htr_images:
@@ -286,12 +290,12 @@ def fb_collate_fn(batch):
     elif detection_attention_masks:
         detection_input_ids = [input_id.unsqueeze(0) for input_id in detection_input_ids[0]]
         detection_attention_masks = [attention_mask.unsqueeze(0) for attention_mask in detection_attention_masks[0]]
-    if labels:
+    if vqa_attention_masks:
         vqa_input_ids = pad_sequence(vqa_input_ids, batch_first=True)
-        labels = pad_sequence(labels, batch_first=True)
+        vqa_attention_masks = pad_sequence(vqa_attention_masks, batch_first=True)
     if code_input_ids:
         code_input_ids = pad_sequence(code_input_ids, batch_first=True)
         code_input_labels = pad_sequence(code_input_labels, batch_first=True)
     return (htr_images, encoded, encoded_length, gt_texts), (code_input_ids, code_input_labels, code_targets), (
-    vqa_images, vqa_input_ids, labels, targets), (
+    vqa_images, vqa_input_ids, vqa_attention_masks, targets), (
            detection_names, detection_images, detection_input_ids, detection_attention_masks, boxes, size)

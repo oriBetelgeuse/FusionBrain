@@ -96,11 +96,11 @@ class BaseGPT2FusionBrain(nn.Module):
         return x
 
     @abstractmethod
-    def forward_vqa(self, images, tokens):
+    def forward_vqa(self, images, tokens, attention_mask):
         return
 
     @abstractmethod
-    def forward_detection(self, images, tokens):
+    def forward_detection(self, images, tokens, attention_mask):
         return
 
     def freeze_gpt(self, freeze_pos=True, freeze_ln=True, freeze_attn=True, freeze_ff=True, freeze_other=True):
@@ -245,11 +245,9 @@ class CrossAttentionGPT2FusionBrain(BaseGPT2FusionBrain):
         self._calculate_common_params()
         print('=== === === === ===')
 
-    def forward_vqa(self, images, tokens, labels):
+    def forward_vqa(self, images, tokens, attention_mask):
         back_out = self.backbone(images)
         patchs = self.input_proj(back_out).flatten(-2).transpose(-1, -2)
-        attention_mask = torch.tensor(labels.clone().detach() != 0, dtype=torch.uint8)
-        attention_mask = attention_mask.to(labels.device)
         # Fusion Brain
         img_embs = self.gpt_model(inputs_embeds=patchs).last_hidden_state
         tokens_embs = self.gpt_model(input_ids=tokens, attention_mask=attention_mask).last_hidden_state
@@ -272,12 +270,12 @@ class CrossAttentionGPT2FusionBrain(BaseGPT2FusionBrain):
 
         return out
 
-    def forward_detection(self, images, tokens, attention_masks):
+    def forward_detection(self, images, tokens, attention_mask):
         back_out = self.backbone(images)
         patchs = self.input_proj(back_out).flatten(-2).transpose(-1, -2)
         # Fusion Brain
         img_embs = self.gpt_model(inputs_embeds=patchs).last_hidden_state
-        tokens_embs = self.gpt_model(input_ids=tokens, attention_mask=attention_masks).last_hidden_state
+        tokens_embs = self.gpt_model(input_ids=tokens, attention_mask=attention_mask).last_hidden_state
         #####
         img_embs = self.image_projection(img_embs)
         tokens_embs = self.text_projection(tokens_embs)
@@ -288,13 +286,14 @@ class CrossAttentionGPT2FusionBrain(BaseGPT2FusionBrain):
         # берём последние max_boxes элементов последовательность как содержащих наибольшую информацию
         # производим эту операцию до cross attention, так как там img_embs видят только текст
         img_embs = img_embs[:, -self.max_boxes:]
-        text_masks = attention_masks.type(torch.bool)
+        text_masks = attention_mask.type(torch.bool)
         for layer in self.cross_attention:
             img_embs, _ = layer(img_embs, tokens_embs, ~text_masks)
 
         output_logits = self.bbox_embed(img_embs).sigmoid()
         out = {
-            'pred_logits': output_logits,
+            'pred_classes': output_logits[:, :, -1],
+            'pred_boxes': output_logits[:, :, :-1],
             'proj_queries': norm_img_emb,
             'proj_tokens': norm_tokens_emb,
         }
@@ -320,13 +319,16 @@ class InverseAttentionGPT2FusionBrain(BaseGPT2FusionBrain):
 
         # detection[image, text] input/output layers:
         self.detection_config = detection_config
-        self.max_boxes = detection_config['max_boxes']
-        self.bbox_embed = MLP(self.embedding_size, self.embedding_size, 5, detection_config['num_mlp_layers'])
+        self.query_embed = nn.Embedding(detection_config['num_queries'], self.embedding_size)
+        self.class_embed = nn.Linear(self.embedding_size, 1)
+        self.bbox_embed = MLP(self.embedding_size, self.embedding_size, 4, detection_config['num_mlp_layers'])
         print('=== DETECTION TASK ===')
         self._calculate_trainable_params([
             self.backbone,
             self.gpt_model,
             self.input_proj,
+            self.query_embed,
+            self.class_embed,
             self.bbox_embed
         ])
         print('=== === === === ===')
@@ -350,36 +352,49 @@ class InverseAttentionGPT2FusionBrain(BaseGPT2FusionBrain):
         print('=== === === === ===')
 
     # для vqa первой идёт img, а затем text
-    def forward_vqa(self, images, tokens):
+    def forward_vqa(self, images, tokens, attention_mask):
         back_out = self.backbone(images)
         img_embeddings = self.input_proj(back_out).flatten(-2).transpose(-1, -2)
+        tokens_embeddings = self.gpt_model.wte(tokens) + self.gpt_model.wpe(torch.arange(tokens.shape[1], device=tokens.device))
 
-        tokens_num = tokens.shape[-1]
-        tokens_embeddings = self.gpt_model.wte(tokens) + self.gpt_model.wpe(
-            torch.arange(tokens.shape[1], device=tokens.device))
+        additiomal_attention_mask = torch.ones(
+            attention_mask.shape[0], img_embeddings.shape[1], dtype=attention_mask.dtype, device=attention_mask.device
+        )
+        attention_mask = torch.cat((additiomal_attention_mask, attention_mask), dim=1)
         embedings = torch.cat((img_embeddings, tokens_embeddings), dim=1)
         # Fusion Brain
         gpt_out = self.gpt_model(inputs_embeds=embedings).last_hidden_state
         #####
+        tokens_num = tokens.shape[1]
         output_logits = self.tokens_embed(gpt_out[:, -tokens_num:])
 
         return output_logits
 
     # для zsod первым идёт text, а затем img
-    def forward_detection(self, images, tokens):
+    def forward_detection(self, images, tokens, attention_mask):
+        bs = images.shape[0]
+
         back_out = self.backbone(images)
         img_embeddings = self.input_proj(back_out).flatten(-2).transpose(-1, -2)
-        tokens_embeddings = self.gpt_model.wte(tokens) + self.gpt_model.wpe(
-            torch.arange(tokens.shape[1], device=tokens.device))
-        embedings = torch.cat((tokens_embeddings, img_embeddings), dim=1)
+        tokens_embeddings = self.gpt_model.wte(tokens) + self.gpt_model.wpe(torch.arange(tokens.shape[1], device=tokens.device))
+        box_embeddings = self.query_embed.weight.unsqueeze(0).repeat(bs, 1, 1)
+
+        additiomal_attention_mask = torch.ones(
+            bs, img_embeddings.shape[1] + box_embeddings.shape[1], dtype=attention_mask.dtype, device=attention_mask.device
+        )
+        attention_mask = torch.cat((attention_mask, additiomal_attention_mask), dim=1)
+        embedings = torch.cat((tokens_embeddings, img_embeddings, box_embeddings), dim=1)
         # Fusion Brain
-        gpt_out = self.gpt_model(inputs_embeds=embedings).last_hidden_state
+        gpt_out = self.gpt_model(inputs_embeds=embedings, attention_mask=attention_mask).last_hidden_state
         #####
 
         # берём последние max_boxes элементов последовательность как содержащих наибольшую информацию
-        output_logits = self.bbox_embed(gpt_out[:, -self.max_boxes:]).sigmoid()
+        num_boxes = box_embeddings.shape[1]
+        output_classes = self.class_embed(gpt_out[:, -num_boxes:]).sigmoid()
+        output_boxes = self.bbox_embed(gpt_out[:, -num_boxes:]).sigmoid()
         out = {
-            'pred_logits': output_logits,
+            'pred_classes': output_classes,
+            'pred_boxes': output_boxes
         }
 
         return out
