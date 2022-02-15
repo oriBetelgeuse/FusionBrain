@@ -140,7 +140,8 @@ def run_train(conf):
         tokenizer=gpt_tokenizer,
         stage='train',
         max_request_tokens_length=conf.data.detection.max_request_tokens_length,
-        vqa_max_tokens_length=conf.data.vqa.max_vqa_tokens_length,
+        max_question_tokens_length=conf.data.vqa.max_question_tokens_length,
+        max_answer_tokens_length=conf.data.vqa.max_answer_tokens_length,
         task_augs=task_augs,
     )
     valid_dataset = DatasetRetriever(
@@ -156,7 +157,8 @@ def run_train(conf):
         tokenizer=gpt_tokenizer,
         stage='valid',
         max_request_tokens_length=conf.data.detection.max_request_tokens_length,
-        vqa_max_tokens_length=conf.data.vqa.max_vqa_tokens_length,
+        max_question_tokens_length=conf.data.vqa.max_question_tokens_length,
+        max_answer_tokens_length=conf.data.vqa.max_answer_tokens_length,
         task_augs=task_augs,
     )
 
