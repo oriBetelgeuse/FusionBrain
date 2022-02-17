@@ -390,7 +390,7 @@ class InverseAttentionGPT2FusionBrain(BaseGPT2FusionBrain):
 
         # берём последние max_boxes элементов последовательность как содержащих наибольшую информацию
         num_boxes = box_embeddings.shape[1]
-        output_classes = self.class_embed(gpt_out[:, -num_boxes:]).sigmoid()
+        output_classes = self.class_embed(gpt_out[:, -num_boxes:]).squeeze(-1).sigmoid()
         output_boxes = self.bbox_embed(gpt_out[:, -num_boxes:]).sigmoid()
         out = {
             'pred_classes': output_classes,

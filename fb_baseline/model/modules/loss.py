@@ -59,7 +59,7 @@ class DetectionCriterion(nn.Module):
         for i, idx in enumerate(boxes_idx):
             target_labels[i][idx] = 1.
 
-        pred_probs = torch.cat(pred_probs)
+        pred_probs = pred_probs.reshape(-1)
         target_labels = torch.cat(target_labels)
         loss = F.binary_cross_entropy(pred_probs, target_labels)
 
