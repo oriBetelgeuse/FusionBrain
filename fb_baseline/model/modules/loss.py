@@ -2,6 +2,7 @@ import torch
 from torch import nn, einsum
 from torchvision.ops import generalized_box_iou
 import torch.nn.functional as F
+from scipy.optimize import linear_sum_assignment
 
 from ..utils.utils import box_xywh_to_xyxy
 
@@ -44,11 +45,21 @@ class DetectionCriterion(nn.Module):
         self.losses = losses
 
     # возвращает индексы предсказанных боксов, у которых IoU с ground truth наибольшее
-    def _get_idx(self, pred_boxes, targets):
-        boxes_idx = list(map(
-            lambda x: torch.argmax(generalized_box_iou(box_xywh_to_xyxy(x[0]), box_xywh_to_xyxy(x[1])), -1),
-            zip(targets, pred_boxes)
-        ))
+    @torch.no_grad()
+    def _get_idx(self, outputs, targets):
+        pred_boxes = outputs["pred_boxes"]
+        pred_classes = outputs["pred_classes"]
+
+        giou_parts = [-generalized_box_iou(box_xywh_to_xyxy(x1), box_xywh_to_xyxy(x2)) for x1, x2 in
+                      zip(pred_boxes, targets)]
+        class_parts = [-pred_classes[i].unsqueeze(-1).repeat(1, targets[i].shape[0]) for i in range(len(targets))]
+        bbox_parts = [torch.cdist(x1, x2, p=1) for x1, x2 in zip(pred_boxes, targets)]
+
+        costs = [
+            class_part + giou_part + bbox_part
+            for class_part, giou_part, bbox_part in zip(class_parts, giou_parts, bbox_parts)
+        ]
+        boxes_idx = [linear_sum_assignment(cost.detach().cpu())[0] for cost in costs]
 
         return boxes_idx
 

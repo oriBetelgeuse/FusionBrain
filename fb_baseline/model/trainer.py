@@ -141,6 +141,7 @@ class CrossAttentionTrainer(BaseTrainer):
         metrics = {}
         local_proj_tokens = []
         local_proj_queries = []
+
         if len(htr_images) > 0:
             htr_loss = self.htr_step(htr_images, encoded, encoded_length)
             metrics['h_loss'] = htr_loss.detach().cpu().item()
