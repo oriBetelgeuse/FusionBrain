@@ -2,7 +2,7 @@ from argparse import ArgumentParser
 
 from omegaconf import OmegaConf
 
-from fb_baseline.train_detection_vqa import run_train
+from fb_baseline.train_fusion import run_train
 
 if __name__ == '__main__':
     parser = ArgumentParser()

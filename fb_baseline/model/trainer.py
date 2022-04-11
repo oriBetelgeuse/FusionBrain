@@ -53,21 +53,21 @@ class InverseAttentionTrainer(pl.LightningModule):
         return handwritten_loss
 
     def trans_step(self, input_ids, attention_masks):
-        lm_logits = self.model('trans', tokens=input_ids, attention_masks=attention_masks)
+        lm_logits = self.model('trans', input_ids=input_ids, attention_mask=attention_masks)
         shift_logits = lm_logits[..., :-1, :].contiguous()
         shift_labels = input_ids[..., 1:].contiguous()
         c2c_loss = self.c2c_criterion(shift_logits.transpose(-1, -2), shift_labels)
         return c2c_loss
 
     def vqa_step(self, images, input_ids, attention_masks):
-        lm_logits = self.model('vqa', images=images, tokens=input_ids, attention_masks=attention_masks)
+        lm_logits = self.model('vqa', images=images, tokens=input_ids, attention_mask=attention_masks)
         shift_logits = lm_logits[..., :-1, :].contiguous()
         shift_labels = input_ids[..., 1:].contiguous()
         vqa_loss = self.vqa_criterion(shift_logits.transpose(-1, -2), shift_labels)
         return vqa_loss
 
     def detection_step(self, images, input_ids, attention_masks, boxes):
-        detection_outputs = self.model('detection', images=images, tokens=input_ids, attention_masks=attention_masks)
+        detection_outputs = self.model('detection', images=images, tokens=input_ids, attention_mask=attention_masks)
         detection_loss = self.detection_criterion(detection_outputs, boxes)
         return detection_loss
 

@@ -124,7 +124,6 @@ def run_train(conf):
         "vqa": VQADataset(df_vqa_valid, gpt_tokenizer, conf.data.vqa.max_question_tokens_length, conf.data.vqa.max_answer_tokens_length, 'valid', task_augs),
         "detection": DetectionDataset(df_detection_valid, gpt_tokenizer, conf.data.detection.max_request_tokens_length, 'valid', task_augs)
     }
-
     train_fusion_dataset = FusionDataset(single_train_datasets, conf.data.sampler_weights)
     valid_fusion_dataset = FusionDataset(single_valid_datasets, conf.data.sampler_weights)
 
