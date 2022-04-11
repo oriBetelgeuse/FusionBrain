@@ -65,7 +65,7 @@ class InverseAttentionGPT2FusionBrain(nn.Module):
             self.backbone,
             self.gpt_model,
             self.input_proj,
-            self.bbox_embed
+            self.tokens_embed
         ])
         print('=== === === === ===')
         #####

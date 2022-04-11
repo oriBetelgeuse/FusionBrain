@@ -10,7 +10,8 @@ data:
     vqa: 1.0
     detection: 1.0
   handwritten:
-    images: '/home/jovyan/vladimir/fusion_brain/data/handwritten/train_labels.json'
+    images: '/home/jovyan/vladimir/fusion_brain/data/handwritten/images/'
+    train_labels: '/home/jovyan/vladimir/fusion_brain/data/handwritten/train_labels.json'
     image_w: 512
     image_h: 128
   c2c:

@@ -5,7 +5,6 @@ import json
 import pandas as pd
 import albumentations as A
 from sklearn.model_selection import StratifiedKFold, train_test_split
-import torch
 import pytorch_lightning as pl
 from torch.utils.data import DataLoader, WeightedRandomSampler
 from catalyst.data import DistributedSamplerWrapper
@@ -21,16 +20,15 @@ def run_train(conf):
     # #
     # Handwritten
     # #
-    with open(conf.data.handwritten.images, 'rb') as f:
+    with open(conf.data.handwritten.train_labels, 'rb') as f:
         json_marking = json.load(f)
     marking = []
     for image_name, text in json_marking.items():
-        if '%' not in text:
-            marking.append({
-                'task_ids': 'handwritten',
-                'images': os.path.join(conf.data.handwritten.images, image_name),
-                'gt_texts': text,
-            })
+        marking.append({
+            'task_ids': 'handwritten',
+            'images': os.path.join(conf.data.handwritten.images, image_name),
+            'gt_texts': text,
+        })
     df_handwritten = pd.DataFrame(marking)
     train_index, valid_index = train_test_split(df_handwritten, test_size=0.15)
     df_handwritten_train = df_handwritten.loc[train_index.index.to_list()]
@@ -152,7 +150,7 @@ def run_train(conf):
         pl.callbacks.ModelCheckpoint(**conf.model_checkpoint)
     ]
 
-    trainer = pl.Trainer(gpus=conf.trainer.gpus, accelerator=conf.trainer.accelerator, max_steps=conf.trainer.total_steps,
+    trainer = pl.Trainer(gpus=conf.trainer.gpus, strategy=conf.trainer.strategy, max_steps=conf.trainer.total_steps,
                          check_val_every_n_epoch=1, replace_sampler_ddp=True, default_root_dir=conf.model_checkpoint.dirpath,
                          logger=comet_logger, callbacks=callbacks, num_sanity_val_steps=0)
 
