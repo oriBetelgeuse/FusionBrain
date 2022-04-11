@@ -1,90 +1,101 @@
 import comet_ml
 import os
 import json
-import random
 
 import pandas as pd
 import albumentations as A
 from sklearn.model_selection import StratifiedKFold, train_test_split
 import torch
 import pytorch_lightning as pl
-from catalyst.data import BalanceClassSampler, DistributedSamplerWrapper
+from torch.utils.data import DataLoader, WeightedRandomSampler
+from catalyst.data import DistributedSamplerWrapper
 from transformers import GPT2Model, GPT2Tokenizer
 
-from .custom_horovod_plugin import CustomHorovodPlugin
-from .fb_utils.utils import simple_detect_lang
 from .model.utils.utils import CTCLabeling
-from .model.dataset.dataset import DatasetRetriever, fb_collate_fn
 from .model.model import InverseAttentionGPT2FusionBrain
 from .model.trainer import InverseAttentionTrainer
+from fb_baseline.model.dataset.dataset import HTRDataset, VQADataset, C2CDataset, DetectionDataset, FusionDataset, fusion_collate_fn
 
 
 def run_train(conf):
     # #
-    # Detection
+    # Handwritten
     # #
-    json_true_zsod = json.load(open(conf.data.detection.requests, 'rb'))
+    with open(conf.data.handwritten.images, 'rb') as f:
+        json_marking = json.load(f)
     marking = []
-    for image_name in json_true_zsod:
-        marking.extend([{
-            'task_id': 'detection',
-            'path': image_name,
-            'req': request,
-            'boxes': boxes,
-            'lang': simple_detect_lang(request)
-        } for request, boxes in json_true_zsod[image_name].items() if boxes])
-    df_detection = pd.DataFrame(marking)
-    df_detection['stage'] = 'train'
-    skf = StratifiedKFold(n_splits=10, random_state=42, shuffle=True)
-    train_index, valid_index = next(skf.split(df_detection.index, df_detection['lang']))
-    df_detection.loc[valid_index, 'stage'] = 'valid'
+    for image_name, text in json_marking.items():
+        if '%' not in text:
+            marking.append({
+                'task_ids': 'handwritten',
+                'images': os.path.join(conf.data.handwritten.images, image_name),
+                'gt_texts': text,
+            })
+    df_handwritten = pd.DataFrame(marking)
+    train_index, valid_index = train_test_split(df_handwritten, test_size=0.15)
+    df_handwritten_train = df_handwritten.loc[train_index.index.to_list()]
+    df_handwritten_train.index = pd.Index(range(df_handwritten_train.shape[0]))
+    df_handwritten_valid = df_handwritten.loc[valid_index.index.to_list()]
+    df_handwritten_valid.index = pd.Index(range(df_handwritten_valid.shape[0]))
+    # #
+    # C2C
+    # #
+    df_c2c = pd.read_json(conf.data.c2c.code, lines=True)
+    df_c2c['task_ids'] = 'c2c'
+    train_index, valid_index = train_test_split(df_c2c, test_size=0.15)
+    df_c2c_train = df_c2c.loc[train_index.index.to_list()]
+    df_c2c_train.index = pd.Index(range(df_c2c_train.shape[0]))
+    df_c2c_valid = df_c2c.loc[valid_index.index.to_list()]
+    df_c2c_valid.index = pd.Index(range(df_c2c_valid.shape[0]))
     # #
     # VQA
     # #
-    json_questions = json.load(open(conf.data.vqa.questions, 'rb'))
-    json_answers = json.load(open(conf.data.vqa.answers, 'rb'))
+    with open(conf.data.vqa.questions, 'rb') as f:
+        json_questions = json.load(f)
+    with open(conf.data.vqa.answers, 'rb') as f:
+        json_answers = json.load(f)
     marking = []
     for key in json_questions:
-        marking.extend([{
-            'path': str(json_questions[key]['image_id']) + '.jpg',
-            'question': json_questions[key]['question'],
-            'answer': answer,
-            'lang': simple_detect_lang(answer)
-        } for answer in json_answers[key]['answer']])
+        for answer in json_answers[key]['answer']:
+            marking.append({
+                'task_ids': 'vqa',
+                'images': os.path.join(conf.data.vqa.images, str(json_questions[key]['image_id']) + '.jpg'),
+                'questions': json_questions[key]['question'],
+                'answers': answer,
+            })
     df_vqa = pd.DataFrame(marking)
-    df_vqa['stage'] = 'train'
-    skf = StratifiedKFold(n_splits=10, random_state=42, shuffle=True)
-    train_index, valid_index = next(skf.split(df_vqa.index, df_vqa['lang']))
-    df_vqa.loc[valid_index, 'stage'] = 'valid'
+    train_index, valid_index = train_test_split(df_vqa, test_size=0.15)
+    df_vqa_train = df_vqa.loc[train_index.index.to_list()]
+    df_vqa_train.index = pd.Index(range(df_vqa_train.shape[0]))
+    df_vqa_valid = df_vqa.loc[valid_index.index.to_list()]
+    df_vqa_valid.index = pd.Index(range(df_vqa_valid.shape[0]))
     # #
-    # Merge in common set
+    # Detection
     # #
-    dataset = []
-    for image_name, text_input, text_output, stage in zip(df_vqa['path'], df_vqa['question'], df_vqa['answer'],
-                                                          df_vqa['stage']):
-        dataset.append({
-            'task_id': 'vqa',
-            'modality': 'image+text',
-            'input_image': image_name,
-            'input_text': text_input,
-            'output_text': text_output,
-            'stage': stage,
-        })
-    for image_name, text_input, boxes, stage in zip(df_detection['path'], df_detection['req'], df_detection['boxes'],
-                                                    df_detection['stage']):
-        dataset.append({
-            'task_id': 'detection',
-            'modality': 'image+text',
-            'input_image': image_name,
-            'input_text': text_input,
-            'output_boxes': boxes,
-            'stage': stage,
-        })
-
-    random.shuffle(dataset)
-    df = pd.DataFrame(dataset)
+    with open(conf.data.detection.requests, 'rb') as f:
+        json_true_zsod = json.load(f)
+    marking = []
+    for image_name in json_true_zsod:
+        for request, boxes in json_true_zsod[image_name].items():
+            marking.append({
+                'task_ids': 'detection',
+                'images': os.path.join(conf.data.detection.images, image_name),
+                'requests': request,
+                'boxes': boxes,
+            })
+    df_detection = pd.DataFrame(marking)
+    train_index, valid_index = train_test_split(df_detection, test_size=0.15)
+    df_detection_train = df_detection.loc[train_index.index.to_list()]
+    df_detection_train.index = pd.Index(range(df_detection_train.shape[0]))
+    df_detection_valid = df_detection.loc[valid_index.index.to_list()]
+    df_detection_valid.index = pd.Index(range(df_detection_valid.shape[0]))
 
     task_augs = {
+        'handwritten': A.Compose([
+            A.CLAHE(clip_limit=4.0, tile_grid_size=(8, 8), p=0.25, always_apply=False),
+            A.Rotate(limit=3, interpolation=1, border_mode=0, p=0.5),
+            A.JpegCompression(quality_lower=75, p=0.5),
+        ], p=1.0),
         'vqa': A.Compose([
             A.Resize(conf.common.image_size, conf.common.image_size, always_apply=True),
             A.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
@@ -95,77 +106,44 @@ def run_train(conf):
         ], p=1.0)
     }
 
-    CHARS = ' !"#&\'()*+,-./0123456789:;<=>?ABCDEFGHIJKLMNOPQRSTUVWXYZ' + \
-            '[]_abcdefghijklmnopqrstuvwxyz|}ЁАБВГДЕЖЗИКЛМНОПРСТУФХЦЧШЩЫЭЮЯабвгдежзийклмнопрстуфхцчшщъыьэюяё№'
-    ctc_labeling = CTCLabeling(CHARS)
+    with open(conf.model.ctc_labeling_chars) as f:
+        ctc_labeling = CTCLabeling(f.read())
     model_name = conf.model.gpt_model
-    gpt_tokenizer = GPT2Tokenizer.from_pretrained(model_name, bos_token='<s>',
-                                                  eos_token='</s>', pad_token='<pad>', unk_token='<|UNKNOWN|>',
-                                                  sep_token='<|SEP|>')
+    gpt_tokenizer = GPT2Tokenizer.from_pretrained(model_name, pad_token='<|pad|>')
 
     gpt_model = GPT2Model.from_pretrained(model_name)
     gpt_model.resize_token_embeddings(len(gpt_tokenizer))
 
-    handwritten_config = {
-        'patch_w': 8,
-        'patch_h': 128,
-        'in_layer_sizes': [8 * 128 * 3],
-        'out_layer_sizes': [64],
-        'orth_gain': 1.41,
-        'dropout': 0.1,
-        'lstm_num_layers': 3,
-        'output_dim': len(ctc_labeling),  # 152
+    single_train_datasets = {
+        "handwritten": HTRDataset(df_handwritten_train, ctc_labeling, conf.data.handwritten.image_w, conf.data.handwritten.image_h, task_augs),
+        "c2c": C2CDataset(df_c2c_train, gpt_tokenizer, conf.data.c2c.max_in_code_length, conf.data.c2c.max_out_code_length, 'train'),
+        "vqa": VQADataset(df_vqa_train, gpt_tokenizer, conf.data.vqa.max_question_tokens_length, conf.data.vqa.max_answer_tokens_length, 'train', task_augs),
+        "detection": DetectionDataset(df_detection_train, gpt_tokenizer, conf.data.detection.max_request_tokens_length, 'train', task_augs)
+    }
+    single_valid_datasets = {
+        "handwritten": HTRDataset(df_handwritten_valid, ctc_labeling, conf.data.handwritten.image_w, conf.data.handwritten.image_h, task_augs),
+        "c2c": C2CDataset(df_c2c_valid, gpt_tokenizer, conf.data.c2c.max_in_code_length, conf.data.c2c.max_out_code_length, 'valid'),
+        "vqa": VQADataset(df_vqa_valid, gpt_tokenizer, conf.data.vqa.max_question_tokens_length, conf.data.vqa.max_answer_tokens_length, 'valid', task_augs),
+        "detection": DetectionDataset(df_detection_valid, gpt_tokenizer, conf.data.detection.max_request_tokens_length, 'valid', task_augs)
     }
 
+    train_fusion_dataset = FusionDataset(single_train_datasets, conf.data.sampler_weights)
+    valid_fusion_dataset = FusionDataset(single_valid_datasets, conf.data.sampler_weights)
+
+    # #
+    # MODEL
+    # #
     model = InverseAttentionGPT2FusionBrain(
         gpt_model,
-        handwritten_config=handwritten_config,
+        handwritten_config=conf.model.handwritten,
         vqa_config={'tokens_num': len(gpt_tokenizer)},
         detection_config=conf.model.detection
-    )
-
-    df_train = df[df['stage'] == 'train']
-    df_valid = df[df['stage'] == 'valid']
-
-    train_dataset = DatasetRetriever(
-        handwritten_images=None,
-        detection_images=conf.data.detection.images,
-        vqa_images=conf.data.vqa.images,
-        task_ids=df_train['task_id'].values,
-        input_images=df_train['input_image'].values,
-        input_texts=df_train['input_text'].values,
-        output_texts=df_train['output_text'].values,
-        output_boxes=df_train['output_boxes'].values,
-        ctc_labeling=ctc_labeling,
-        tokenizer=gpt_tokenizer,
-        stage='train',
-        max_request_tokens_length=conf.data.detection.max_request_tokens_length,
-        max_question_tokens_length=conf.data.vqa.max_question_tokens_length,
-        max_answer_tokens_length=conf.data.vqa.max_answer_tokens_length,
-        task_augs=task_augs,
-    )
-    valid_dataset = DatasetRetriever(
-        handwritten_images=None,
-        detection_images=conf.data.detection.images,
-        vqa_images=conf.data.vqa.images,
-        task_ids=df_valid['task_id'].values,
-        input_images=df_valid['input_image'].values,
-        input_texts=df_valid['input_text'].values,
-        output_texts=df_valid['output_text'].values,
-        output_boxes=df_valid['output_boxes'].values,
-        ctc_labeling=ctc_labeling,
-        tokenizer=gpt_tokenizer,
-        stage='valid',
-        max_request_tokens_length=conf.data.detection.max_request_tokens_length,
-        max_question_tokens_length=conf.data.vqa.max_question_tokens_length,
-        max_answer_tokens_length=conf.data.vqa.max_answer_tokens_length,
-        task_augs=task_augs,
     )
 
     lightning_model = InverseAttentionTrainer(model, conf.trainer, gpt_tokenizer, ctc_labeling)
 
     comet_logger = pl.loggers.CometLogger(
-        api_key="8uucVJ9Hf7WVJuHwVz8DIA04H",
+        api_key=None,
         workspace=os.environ.get("COMET_WORKSPACE"),
         **conf.logger.commet
     )
@@ -173,46 +151,42 @@ def run_train(conf):
         pl.callbacks.LearningRateMonitor(logging_interval='step'),
         pl.callbacks.ModelCheckpoint(**conf.model_checkpoint)
     ]
-    plugins = None
-    if conf.trainer.accelerator == 'horovod':
-        backward_passes_per_step = 1
-        plugins = [CustomHorovodPlugin(backward_passes_per_step=backward_passes_per_step)]
 
     trainer = pl.Trainer(gpus=conf.trainer.gpus, accelerator=conf.trainer.accelerator, max_steps=conf.trainer.total_steps,
                          check_val_every_n_epoch=1, replace_sampler_ddp=True, default_root_dir=conf.model_checkpoint.dirpath,
-                         plugins=plugins, logger=comet_logger, callbacks=callbacks, num_sanity_val_steps=0)
+                         logger=comet_logger, callbacks=callbacks, num_sanity_val_steps=0)
 
     train_sampler = DistributedSamplerWrapper(
-        sampler=BalanceClassSampler(labels=train_dataset.get_task_labels()),
+        sampler=WeightedRandomSampler(train_fusion_dataset.weights, len(train_fusion_dataset.weights)),
         num_replicas=conf.data.world_size,
         rank=trainer.global_rank,
-        shuffle=True
+        shuffle=False
     )
 
     valid_sampler = DistributedSamplerWrapper(
-        sampler=BalanceClassSampler(labels=valid_dataset.get_task_labels()),
+        sampler=WeightedRandomSampler(valid_fusion_dataset.weights, len(valid_fusion_dataset.weights)),
         num_replicas=conf.data.world_size,
         rank=trainer.global_rank,
-        shuffle=True
+        shuffle=False
     )
 
-    train_loader = torch.utils.data.DataLoader(
-        train_dataset,
+    train_loader = DataLoader(
+        train_fusion_dataset,
         batch_size=conf.data.batch_size,
         sampler=train_sampler,
         pin_memory=False,
         drop_last=True,
         num_workers=conf.data.num_workers,
-        collate_fn=fb_collate_fn,
+        collate_fn=fusion_collate_fn,
     )
-    valid_loader = torch.utils.data.DataLoader(
-        valid_dataset,
+    valid_loader = DataLoader(
+        valid_fusion_dataset,
         batch_size=conf.data.batch_size,
         sampler=valid_sampler,
         pin_memory=False,
         drop_last=False,
         num_workers=conf.data.num_workers,
-        collate_fn=fb_collate_fn,
+        collate_fn=fusion_collate_fn,
     )
 
     trainer.fit(lightning_model, train_loader, valid_loader)

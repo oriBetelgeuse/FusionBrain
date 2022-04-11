@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 import torch.nn.functional as F
-from torchvision.models import resnet18
+from torchvision.models import resnet50
 
 
 class MLP(nn.Module):
@@ -22,8 +22,8 @@ class ResnetBackbone(nn.Module):
 
     def __init__(self, pretrained=True):
         super().__init__()
-        self.num_channels = 512
-        self.backbone = resnet18(pretrained=pretrained)
+        self.num_channels = 1024
+        self.backbone = resnet50(pretrained=pretrained)
 
     def forward(self, img):
         x = self.backbone.conv1(img)
@@ -33,7 +33,6 @@ class ResnetBackbone(nn.Module):
         x = self.backbone.layer1(x)
         x = self.backbone.layer2(x)
         x = self.backbone.layer3(x)
-        x = self.backbone.layer4(x)
 
         return x
 

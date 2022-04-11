@@ -1,6 +1,7 @@
 import os
 import cv2
 import numpy as np
+import pandas as pd
 import torch
 from torch.utils.data import Dataset
 from torch.nn.utils.rnn import pad_sequence
@@ -8,294 +9,337 @@ from torch.nn.utils.rnn import pad_sequence
 from ..utils.utils import resize_if_need, make_img_padding
 
 
-class DatasetRetriever(Dataset):
+class HTRDataset(Dataset):
 
-    def __init__(self,
-                 handwritten_images,
-                 vqa_images,
-                 detection_images,
-                 task_ids,
-                 input_images,
-                 input_texts,
-                 output_texts,
-                 output_boxes,
-                 ctc_labeling,
-                 tokenizer,
-                 stage,
-                 max_request_tokens_length,
-                 max_question_tokens_length,
-                 max_answer_tokens_length,
-                 task_augs=None):
+    def __init__(self, dataframe, ctc_labeling, image_w, image_h, task_augs=None):
         super().__init__()
-        self.handwritten_images = handwritten_images
-        self.vqa_images = vqa_images
-        self.detection_images = detection_images
-
-        self.task_ids = task_ids
-
-        self.input_images = input_images
-        self.input_texts = input_texts
-        self.output_texts = output_texts
+        self.task_ids = dataframe["task_ids"].copy()
+        self.images = dataframe["images"].copy()
+        self.gt_texts = dataframe["gt_texts"].copy()
 
         self.task_augs = task_augs or {}
-        self.tokenizer = tokenizer
-        self.stage = stage
-
-        # handwritten[image]:
         self.ctc_labeling = ctc_labeling
-        self.handwritten_image_w = 512
-        self.handwritten_image_h = 128
 
-        # code2code
-        self.code_max_length = 512
+        self.image_w = image_w
+        self.image_h = image_h
 
-        # detection[image, text]:
-        self.max_request_tokens_length = max_request_tokens_length
-        self.output_boxes = output_boxes
+    def change_index(self, index_shift):
+        self.task_ids.index += index_shift
+        self.images.index += index_shift
+        self.gt_texts.index += index_shift
 
-        # vqa[image, text]:
-        self.max_question_tokens_length = max_question_tokens_length
-        self.max_answer_tokens_length = max_answer_tokens_length
+    def __len__(self):
+        return self.task_ids.shape[0]
 
     def __getitem__(self, idx):
-        task_id = self.task_ids[idx]
-        if task_id == 'handwritten':
-            return self.get_handwritten_sample(idx)
-        elif task_id == 'trans':
-            return self.get_trans_sample(idx)
-        elif task_id == 'detection':
-            return self.get_detection_sample(idx)
-        elif task_id == 'vqa':
-            return self.get_vqa_sample(idx)
-        return {'task_id': task_id}
-
-    def get_trans_sample(self, idx):
-
-        source = self.input_texts[idx]
-        encoded_source = self.tokenizer.encode(str(source))
-        target = self.output_texts[idx]
-        encoded_target = self.tokenizer.encode(str(target))
-
-        input_ids, input_labels = self.pad_and_get_mask(encoded_target, encoded_source, self.tokenizer)
-        input_ids, input_labels = torch.tensor(input_ids), torch.tensor(input_labels)
-
-        return {
-            'task_id': self.task_ids[idx],
-            'input_ids': input_ids,
-            'input_labels': input_labels,
-            'target': target
-        }
-
-    def get_handwritten_sample(self, idx):
-        path = os.path.join(self.handwritten_images, self.input_images[idx])
+        path = self.images[idx]
         image = cv2.imread(path)
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        image, _ = self.resize_image(image)
+        image, _ = resize_if_need(image, self.image_h, self.image_w)
+        image = make_img_padding(image, self.image_h, self.image_w)
 
-        gt_text = self.output_texts[idx]
-        encoded = self.ctc_labeling.encode(gt_text)
-
-        ## Augs ##
         transforms = self.task_augs.get('handwritten')
         if transforms:
             image = transforms(image=image)['image']
-        ##########
+        image = image / 255.0
+        image = image.transpose(2, 0, 1)
+        image = torch.tensor(image, dtype=torch.float32)
 
-        image = image.astype(np.float32) / 255.0
-        image = torch.from_numpy(image).permute(2, 0, 1)
+        gt_text = self.gt_texts[idx]
+        encoded = self.ctc_labeling.encode(gt_text)
+        encoded = torch.tensor(encoded, dtype=torch.long)
 
         return {
             'task_id': self.task_ids[idx],
             'image': image,
             'gt_text': gt_text,
-            'encoded': torch.tensor(encoded, dtype=torch.int32),
+            'encoded': encoded,
         }
 
-    def get_detection_sample(self, idx):
-        path = os.path.join(self.detection_images, self.input_images[idx])
+
+class C2CDataset(Dataset):
+
+    def __init__(self, dataframe, tokenizer, max_in_code_length, max_out_code_length, stage):
+        super().__init__()
+        self.task_ids = dataframe["task_ids"].copy()
+        self.input_code = dataframe["java"].copy()
+        self.output_code = dataframe["python"].copy()
+
+        self.tokenizer = tokenizer
+        self.stage = stage
+
+        self.max_in_code_length = max_in_code_length
+        self.max_out_code_length = max_out_code_length
+
+    def change_index(self, index_shift):
+        self.task_ids.index += index_shift
+        self.input_code.index += index_shift
+        self.output_code.index += index_shift
+
+    def __len__(self):
+        return self.task_ids.shape[0]
+
+    def __getitem__(self, idx):
+        source = "Java: " + self.input_code[idx] + " Python: "
+        encoded_source = self.tokenizer.encode(source)
+        target = self.output_code[idx]
+        encoded_target = self.tokenizer.encode(target)
+
+        if self.stage == 'train' or self.stage == 'valid':
+            input_tokens = encoded_source[:self.max_in_code_length]
+            output_tokens = encoded_target[:self.max_out_code_length]
+            input_ids = input_tokens + output_tokens + [self.tokenizer.eos_token_id]
+            attention_mask = [1] * len(input_ids)
+
+            pad_len = self.max_in_code_length + self.max_out_code_length - len(input_ids)
+            input_ids += [self.tokenizer.pad_token_id] * pad_len
+            attention_mask += [0] * pad_len
+            input_ids = torch.tensor(input_ids, dtype=torch.long)
+            attention_mask = torch.tensor(attention_mask, dtype=torch.long)
+        else:
+            input_ids = encoded_source[:self.max_in_code_length]
+            attention_mask = [1] * len(input_ids)
+            input_ids = torch.tensor(input_ids, dtype=torch.long)
+            attention_mask = torch.tensor(attention_mask, dtype=torch.long)
+
+        return {
+            'task_id': self.task_ids[idx],
+            'input_ids': input_ids,
+            'attention_mask': attention_mask,
+            'target': target
+        }
+
+
+class VQADataset(Dataset):
+
+    def __init__(self, dataframe, tokenizer, max_question_tokens_length, max_answer_tokens_length, stage, task_augs=None):
+        super().__init__()
+        self.task_ids = dataframe["task_ids"].copy()
+        self.images = dataframe["images"].copy()
+        self.questions = dataframe["questions"].copy()
+        self.answers = dataframe["answers"].copy()
+
+        self.task_augs = task_augs or {}
+        self.tokenizer = tokenizer
+        self.stage = stage
+
+        self.max_question_tokens_length = max_question_tokens_length
+        self.max_answer_tokens_length = max_answer_tokens_length
+
+    def __len__(self):
+        return self.task_ids.shape[0]
+
+    def change_index(self, index_shift):
+        self.task_ids.index += index_shift
+        self.images.index += index_shift
+        self.questions.index += index_shift
+        self.answers.index += index_shift
+
+    def __getitem__(self, idx):
+        path = self.images[idx]
         image = cv2.imread(path)
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         image_h, image_w, _ = image.shape
 
-        ## Augs ##
         transforms = self.task_augs.get('detection')
         if transforms:
             image = transforms(image=image)['image']
-        image = image.astype(np.float32) / 255.0
-        image = torch.from_numpy(image).permute(2, 0, 1)
-        image_name = self.input_images[idx]
-        ##########
+        image = image.transpose(2, 0, 1)
+        image = torch.tensor(image, dtype=torch.float32)
 
-        ## Input tokens and Boxes##
-        output_boxes = self.output_boxes[idx]
+        question = "Question: " + self.questions[idx] + " Answer: "
+        input_tokens = self.tokenizer.encode(question)
+        answer = self.answers[idx] + "."
         if self.stage == 'train' or self.stage == 'valid':
-            input_text = self.input_texts[idx]
-            input_tokens = self.tokenizer.encode_plus(input_text)
-            input_tokens['input_ids'] = input_tokens['input_ids'][:self.max_request_tokens_length]
-            input_tokens['attention_mask'] = input_tokens['attention_mask'][:self.max_request_tokens_length]
-            pad_len = self.max_request_tokens_length - len(input_tokens['input_ids'])
-            input_tokens['input_ids'] += [self.tokenizer.pad_token_id] * pad_len
-            input_tokens['attention_mask'] += [0] * pad_len
-            input_ids = torch.tensor(input_tokens['input_ids'])
-            attention_mask = torch.tensor(input_tokens['attention_mask'])
-
-            output_boxes = torch.tensor(output_boxes, dtype=torch.float32)
-            output_boxes[:, 0] /= image_w
-            output_boxes[:, 1] /= image_h
-            output_boxes[:, 2] /= image_w
-            output_boxes[:, 3] /= image_h
-        else:
-            input_texts = self.input_texts[idx].split(';')
-            input_ids = list(map(self.tokenizer.encode, input_texts))
-            attention_mask = [[1 for _ in input_token] for input_token in input_ids]
-            input_ids = [torch.tensor(input_id) for input_id in input_ids]
-            attention_mask = [torch.tensor(mask) for mask in attention_mask]
-
-            output_boxes = {
-                input_text: boxes for input_text, boxes in zip(input_texts, output_boxes)
-            }
-        ###########
-
-        return {
-            'task_id': self.task_ids[idx],
-            'image_name': image_name,
-            'image': image,
-            'input_ids': input_ids,
-            'attention_mask': attention_mask,
-            'boxes': output_boxes,
-            'size': (image_h, image_w)
-        }
-
-    def get_vqa_sample(self, idx):
-        path = os.path.join(self.vqa_images, self.input_images[idx])
-        image = cv2.imread(path)
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-
-        ## Augs ##
-        transforms = self.task_augs.get('vqa')
-        if transforms:
-            image = transforms(image=image)['image']
-        image = image.astype(np.float32) / 255.0
-        image = torch.from_numpy(image).permute(2, 0, 1)
-        image_name = self.input_images[idx]
-        ##########
-
-        ## Question and Answer ##
-        input_text = self.input_texts[idx]
-        input_tokens = self.tokenizer.encode(input_text)
-        output_text = self.output_texts[idx]
-
-        if self.stage == 'train' or self.stage == 'valid':
-            output_tokens = self.tokenizer.encode(output_text)
+            output_tokens = self.tokenizer.encode(answer)
             input_tokens = input_tokens[:self.max_question_tokens_length]
             output_tokens = output_tokens[:self.max_answer_tokens_length]
-            input_ids = [self.tokenizer.bos_token_id] + input_tokens + [self.tokenizer.sep_token_id] + output_tokens + [self.tokenizer.eos_token_id]
-            attention_mask = [1] * (len(input_tokens) + len(output_tokens) + 3)
+            input_ids = input_tokens + output_tokens
+            attention_mask = [1] * len(input_ids)
 
             pad_len = self.max_question_tokens_length + self.max_answer_tokens_length - len(input_ids)
             input_ids += [self.tokenizer.pad_token_id] * pad_len
             attention_mask += [0] * pad_len
+            input_ids = torch.tensor(input_ids, dtype=torch.long)
+            attention_mask = torch.tensor(attention_mask, dtype=torch.long)
         else:
-            input_ids = [self.tokenizer.bos_token_id] + input_tokens + [self.tokenizer.sep_token_id]
-            attention_mask = [1] * (len(input_tokens) + 2)
-        ##########
+            input_ids = input_tokens[:self.max_question_tokens_length]
+            attention_mask = [1] * len(input_ids)
+            input_ids = torch.tensor(input_ids, dtype=torch.long)
+            attention_mask = torch.tensor(attention_mask, dtype=torch.long)
 
         return {
             'task_id': self.task_ids[idx],
-            'image_name': image_name,
+            'image_name': os.path.basename(path),
             'image': image,
-            'input_ids': torch.tensor(input_ids),
-            'attention_mask': torch.tensor(attention_mask),
-            'target': output_text
+            'input_ids': input_ids,
+            'attention_mask': attention_mask,
+            'target': answer
         }
 
-    def resize_image(self, image):
-        image, coef = resize_if_need(image, self.handwritten_image_h, self.handwritten_image_w)
-        image = make_img_padding(image, self.handwritten_image_h, self.handwritten_image_w)
-        return image, coef
 
-    def pad_and_get_mask(self, target, source, tokenizer):
-        if self.stage == 'test':
-            target = []
-        while len(target) + len(source) + 2 > self.code_max_length:
-            if len(target) > len(source):
-                target = target[:-1]
-            else:
-                source = source[:-1]
-        if self.stage == 'train' or self.stage == 'valid':
-            inputs = source + [tokenizer.bos_token_id] + target + [tokenizer.eos_token_id]
-            labels = [1] * len(source) + [2] * (len(target) + 1) + [0]
+class DetectionDataset(Dataset):
 
-        else:
-            inputs = source + [tokenizer.bos_token_id]
-            labels = [1] * len(source) + [2]
+    def __init__(self, dataframe, tokenizer, max_request_tokens_length, stage, task_augs=None):
+        super().__init__()
+        self.task_ids = dataframe["task_ids"].copy()
+        self.images = dataframe["images"].copy()
+        self.requests = dataframe["requests"].copy()
+        self.boxes = dataframe["boxes"].copy()
 
-            return inputs, labels
+        self.task_augs = task_augs or {}
+        self.tokenizer = tokenizer
+        self.stage = stage
 
-        assert len(inputs) <= self.code_max_length
-        pad_len = self.code_max_length - len(inputs)
-        inputs += [tokenizer.pad_token_id] * pad_len
-        labels += [0] * pad_len
-        assert len(inputs) == len(labels)
+        self.max_request_tokens_length = max_request_tokens_length
 
-        return inputs, labels
+    def change_index(self, index_shift):
+        self.task_ids.index += index_shift
+        self.images.index += index_shift
+        self.requests.index += index_shift
+        self.boxes.index += index_shift
 
-    def __len__(self) -> int:
+    def __len__(self):
         return self.task_ids.shape[0]
 
-    def get_task_labels(self):
-        return list(self.task_ids)
+    def __getitem__(self, idx):
+        path = self.images[idx]
+        image = cv2.imread(path)
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        image_h, image_w, _ = image.shape
+
+        transforms = self.task_augs.get('detection')
+        if transforms:
+            image = transforms(image=image)['image']
+        image = image.transpose(2, 0, 1)
+        image = torch.tensor(image, dtype=torch.float32)
+
+        request = self.requests[idx]
+        boxes = self.boxes[idx]
+        if self.stage == 'train' or self.stage == 'valid':
+            request = 'Request: ' + request + '.'
+            input_tokens = self.tokenizer.encode(request)
+            input_ids = input_tokens[:self.max_request_tokens_length]
+            attention_mask = [1] * len(input_ids)
+
+            pad_len = self.max_request_tokens_length - len(input_ids)
+            input_ids += [self.tokenizer.eos_token_id] * pad_len
+            attention_mask += [0] * pad_len
+            input_ids = torch.tensor(input_ids, dtype=torch.long)
+            attention_mask = torch.tensor(attention_mask, dtype=torch.long)
+
+            boxes = torch.tensor(boxes, dtype=torch.float32)
+            boxes[:, [0, 2]] /= image_w
+            boxes[:, [1, 3]] /= image_h
+        else:
+            input_ids = list(map(lambda x: self.tokenizer.encode('Request: ' + x + '.'), request))
+            attention_mask = [torch.ones(len(tokens), dtype=torch.long) for tokens in input_ids]
+            input_ids = [torch.tensor(input_id, dtype=torch.long) for input_id in input_ids]
+
+        return {
+            'task_id': self.task_ids[idx],
+            'image_name': os.path.basename(path),
+            'image': image,
+            'input_ids': input_ids,
+            'attention_mask': attention_mask,
+            'boxes': boxes,
+            'size': (image_h, image_w)
+        }
 
 
-def fb_collate_fn(batch):
-    """ fusion brain collate fn """
-    encoded, encoded_length, htr_images, gt_texts = [], [], [], []  # handwritten[image]
-    code_input_ids, code_input_labels, code_targets = [], [], []  # code
-    vqa_images, vqa_input_ids, vqa_attention_masks, targets = [], [], [], []  # vqa[image, text]
-    detection_names, detection_images, detection_input_ids, detection_attention_masks, boxes, size = [], [], [], [], [], []  # detection[image, text]
+class FusionDataset(Dataset):
 
-    for i, sample in enumerate(batch):
-        if sample['task_id'] == 'handwritten':
-            encoded.append(sample['encoded'])
-            encoded_length.append(sample['encoded'].shape[0])
-            htr_images.append(sample['image'])
-            gt_texts.append(sample['gt_text'])
-        elif sample['task_id'] == 'trans':
-            code_input_ids.append(sample['input_ids'])
-            code_input_labels.append(sample['input_labels'])
-            code_targets.append(sample['target'])
-        elif sample['task_id'] == 'detection':
-            detection_images.append(sample['image'])
-            detection_input_ids.append(sample['input_ids'])
-            detection_attention_masks.append(sample['attention_mask'])
-            boxes.append(sample['boxes'])
-            size.append(sample['size'])
-            detection_names.append(sample['image_name'])
-        elif sample['task_id'] == 'vqa':
-            vqa_images.append(sample['image'])
-            vqa_input_ids.append(sample['input_ids'])
-            vqa_attention_masks.append(sample['labels'])
-            targets.append(sample['target'])
+    def __init__(self, single_datasets, weights):
+        super().__init__()
+        self.single_datasets = single_datasets
 
-    if htr_images:
-        htr_images = pad_sequence(htr_images, batch_first=True)
-        encoded, encoded_length = pad_sequence(encoded, batch_first=True), torch.tensor(encoded_length)
-    if detection_images:
-        detection_images = torch.stack(detection_images)
-    if vqa_images:
-        vqa_images = torch.stack(vqa_images)
-    if detection_attention_masks and torch.is_tensor(detection_attention_masks[0]):
-        detection_input_ids = pad_sequence(detection_input_ids, batch_first=True)
-        detection_attention_masks = torch.stack(detection_attention_masks)
-    elif detection_attention_masks:
-        detection_input_ids = [input_id.unsqueeze(0) for input_id in detection_input_ids[0]]
-        detection_attention_masks = [attention_mask.unsqueeze(0) for attention_mask in detection_attention_masks[0]]
-    if vqa_attention_masks:
-        vqa_input_ids = pad_sequence(vqa_input_ids, batch_first=True)
-        vqa_attention_masks = pad_sequence(vqa_attention_masks, batch_first=True)
-    if code_input_ids:
-        code_input_ids = pad_sequence(code_input_ids, batch_first=True)
-        code_input_labels = pad_sequence(code_input_labels, batch_first=True)
-    return (htr_images, encoded, encoded_length, gt_texts), (code_input_ids, code_input_labels, code_targets), (
-    vqa_images, vqa_input_ids, vqa_attention_masks, targets), (
-           detection_names, detection_images, detection_input_ids, detection_attention_masks, boxes, size)
+        index_shifts = np.cumsum([0] + [len(dataset) for dataset in single_datasets.values()])
+        for index_shift, dataset_name in zip(index_shifts[:-1], single_datasets.keys()):
+            self.single_datasets[dataset_name].change_index(index_shift)
+        self.task_ids = pd.concat([dataset.task_ids for dataset in single_datasets.values()])
+
+        self.weights = []
+        for dataset_name in single_datasets.keys():
+            self.weights += [weights[dataset_name] / len(single_datasets[dataset_name])] * len(single_datasets[dataset_name])
+
+    def __getitem__(self, idx):
+        task_id = self.task_ids[idx]
+        sample = self.single_datasets.get(task_id, {'task_id': task_id})[idx]
+        return sample
+
+    def __len__(self):
+        return self.task_ids.shape[0]
+
+
+def htr_collate_fn(batch):
+    encoded, encoded_length, images, gt_texts = [], [], [], []
+    for sample in batch:
+        encoded.append(sample['encoded'])
+        encoded_length.append(sample['encoded'].shape[0])
+        images.append(sample['image'])
+        gt_texts.append(sample['gt_text'])
+    if batch:
+        images = pad_sequence(images, batch_first=True)
+        encoded = pad_sequence(encoded, batch_first=True)
+        encoded_length = torch.tensor(encoded_length)
+    return images, encoded, encoded_length, gt_texts
+
+
+def c2c_collate_fn(batch):
+    input_ids, attention_masks, targets = [], [], []
+    for sample in batch:
+        input_ids.append(sample['input_ids'])
+        attention_masks.append(sample['attention_mask'])
+        targets.append(sample['target'])
+    if batch:
+        input_ids = torch.stack(input_ids)
+        attention_masks = torch.stack(attention_masks)
+    return input_ids, attention_masks, targets
+
+
+def vqa_collate_fn(batch):
+    images, input_ids, attention_masks, targets = [], [], [], []
+    for sample in batch:
+        images.append(sample['image'])
+        input_ids.append(sample['input_ids'])
+        attention_masks.append(sample['attention_mask'])
+        targets.append(sample['target'])
+    if batch:
+        images = torch.stack(images)
+        input_ids = torch.stack(input_ids)
+        attention_masks = torch.stack(attention_masks)
+    return images, input_ids, attention_masks, targets
+
+
+def detection_collate_fn(batch):
+    names, images, input_ids, attention_masks, boxes, size = [], [], [], [], [], []
+    for sample in batch:
+        images.append(sample['image'])
+        input_ids.append(sample['input_ids'])
+        attention_masks.append(sample['attention_mask'])
+        boxes.append(sample['boxes'])
+        size.append(sample['size'])
+        names.append(sample['image_name'])
+    if batch:
+        images = torch.stack(images)
+        input_ids = torch.stack(input_ids)
+        attention_masks = torch.stack(attention_masks)
+    return names, images, input_ids, attention_masks, boxes, size
+
+
+def fusion_collate_fn(batch):
+    single_collate_fn = {
+        "handwritten": htr_collate_fn,
+        "c2c": c2c_collate_fn,
+        "vqa": vqa_collate_fn,
+        "detection": detection_collate_fn,
+    }
+    single_batch = {
+        "handwritten": [],
+        "c2c": [],
+        "vqa": [],
+        "detection": [],
+    }
+    for sample in batch:
+        single_batch[sample['task_id']].append(sample)
+    return [single_collate_fn[key](single_batch[key]) for key in single_collate_fn.keys()]

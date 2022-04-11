@@ -1,17 +1,13 @@
-from abc import abstractmethod
-
 import torch
 from torch import nn
 from einops import rearrange
-import torch.nn.functional as F
 
-from .modules.layers import ResnetBackbone, CrossAttentionLayer, MLP
+from .modules.layers import ResnetBackbone, MLP
 
 
-# в базовом классе определяем только handwritten и c2c
-class BaseGPT2FusionBrain(nn.Module):
+class InverseAttentionGPT2FusionBrain(nn.Module):
 
-    def __init__(self, gpt_model, handwritten_config, **freeze_gpt_kwargs):
+    def __init__(self, gpt_model, handwritten_config, vqa_config, detection_config, **freeze_gpt_kwargs):
         super().__init__()
         self.gpt_model = gpt_model
         self.embedding_size = self.gpt_model.config.n_embd
@@ -56,31 +52,54 @@ class BaseGPT2FusionBrain(nn.Module):
         print('=== === === === ===')
         #####
 
-    def forward(self, task_id, **kwargs):
-        if task_id == 'handwritten':
-            return self.forward_handwritten(**kwargs)
-        elif task_id == 'trans':
-            return self.forward_trans(**kwargs)
-        elif task_id == 'vqa':
-            return self.forward_vqa(**kwargs)
-        elif task_id == 'detection':
-            return self.forward_detection(**kwargs)
+        ## zhOD[image, text] and VQA[image, text] layers:
+        self.backbone = ResnetBackbone(pretrained=True)
+        self.input_proj = nn.Conv2d(self.backbone.num_channels, self.embedding_size, kernel_size=1)
+        #####
 
-    def forward_trans(self, input_ids, input_labels=None, eval_bleu=False, past=None):
-        if not eval_bleu:
-            attn_mask = torch.tensor(input_labels.clone().detach() != 0, dtype=torch.uint8)
-            attn_mask = attn_mask.to(input_labels.device)
-            outputs = self.gpt_model(input_ids, attention_mask=attn_mask)
-            x = self.lm_head(outputs[0])
-            return x
-        else:
-            if past is not None:
-                outputs = self.gpt_model(input_ids, past_key_values=past)
-                logits = self.lm_head(outputs[0])
-                return logits, outputs[1]
-            else:
-                outputs = self.gpt_model(input_ids)[1]
-                return outputs
+        # vqa[image, text] input/output layers:
+        self.vqa_config = vqa_config
+        self.tokens_embed = nn.Linear(self.embedding_size, vqa_config['tokens_num'])
+        print('=== VQA TASK ===')
+        self._calculate_trainable_params([
+            self.backbone,
+            self.gpt_model,
+            self.input_proj,
+            self.bbox_embed
+        ])
+        print('=== === === === ===')
+        #####
+
+        # detection[image, text] input/output layers:
+        self.detection_config = detection_config
+        self.query_embed = nn.Embedding(detection_config['num_queries'], self.embedding_size)
+        self.class_embed = nn.Linear(self.embedding_size, 1)
+        self.bbox_embed = MLP(self.embedding_size, self.embedding_size, 4, detection_config['num_mlp_layers'])
+        print('=== DETECTION TASK ===')
+        self._calculate_trainable_params([
+            self.backbone,
+            self.gpt_model,
+            self.input_proj,
+            self.query_embed,
+            self.class_embed,
+            self.bbox_embed
+        ])
+        print('=== === === === ===')
+        #####
+
+        self.forward_tasks = {
+            'handwritten': self.forward_handwritten,
+            'trans': self.forward_trans,
+            'vqa': self.forward_vqa,
+            'detection': self.forward_detection,
+        }
+
+        print('=== COMMON PARAMS ===')
+        self._calculate_common_params()
+        print('=== === === === ===')
+
+    def forward(self, task_id, **kwargs):
+        return self.forward_tasks[task_id](**kwargs)
 
     def forward_handwritten(self, images):
         x = rearrange(images, 'b c (h p1) (w p2) -> b (w) (h) (p1 p2 c)',
@@ -95,13 +114,58 @@ class BaseGPT2FusionBrain(nn.Module):
         x = self.handwritten_output_layer(x)
         return x
 
-    @abstractmethod
-    def forward_vqa(self, images, tokens, attention_mask):
-        return
+    def forward_trans(self, input_ids, attention_mask):
+        # Fusion Brain
+        gpt_out = self.gpt_model(input_ids, attention_mask=attention_mask).last_hidden_state
+        #####
+        output_logits = self.lm_head(gpt_out)
 
-    @abstractmethod
+        return output_logits
+
+    def forward_vqa(self, images, tokens, attention_mask):
+        back_out = self.backbone(images)
+        img_embeddings = self.input_proj(back_out).flatten(-2).transpose(-1, -2)
+        tokens_embeddings = self.gpt_model.wte(tokens) + self.gpt_model.wpe(torch.arange(tokens.shape[1], device=tokens.device))
+
+        additiomal_attention_mask = torch.ones(
+            attention_mask.shape[0], img_embeddings.shape[1], dtype=attention_mask.dtype, device=attention_mask.device
+        )
+        attention_mask = torch.cat((additiomal_attention_mask, attention_mask), dim=1)
+        embedings = torch.cat((img_embeddings, tokens_embeddings), dim=1)
+        # Fusion Brain
+        gpt_out = self.gpt_model(inputs_embeds=embedings, attention_mask=attention_mask).last_hidden_state
+        #####
+        tokens_num = tokens.shape[1]
+        output_logits = self.tokens_embed(gpt_out[:, -tokens_num:])
+
+        return output_logits
+
     def forward_detection(self, images, tokens, attention_mask):
-        return
+        bs = images.shape[0]
+
+        back_out = self.backbone(images)
+        img_embeddings = self.input_proj(back_out).flatten(-2).transpose(-1, -2)
+        tokens_embeddings = self.gpt_model.wte(tokens) + self.gpt_model.wpe(torch.arange(tokens.shape[1], device=tokens.device))
+        box_embeddings = self.query_embed.weight.unsqueeze(0).repeat(bs, 1, 1)
+
+        additional_attention_mask = torch.ones(
+            bs, img_embeddings.shape[1] + box_embeddings.shape[1], dtype=attention_mask.dtype, device=attention_mask.device
+        )
+        attention_mask = torch.cat((attention_mask, additional_attention_mask), dim=1)
+        embedings = torch.cat((tokens_embeddings, img_embeddings, box_embeddings), dim=1)
+        # Fusion Brain
+        gpt_out = self.gpt_model(inputs_embeds=embedings, attention_mask=attention_mask).last_hidden_state
+        #####
+
+        num_boxes = box_embeddings.shape[1]
+        output_classes = self.class_embed(gpt_out[:, -num_boxes:]).squeeze(-1).sigmoid()
+        output_boxes = self.bbox_embed(gpt_out[:, -num_boxes:]).sigmoid()
+        out = {
+            'pred_classes': output_classes,
+            'pred_boxes': output_boxes
+        }
+
+        return out
 
     def freeze_gpt(self, freeze_pos=True, freeze_ln=True, freeze_attn=True, freeze_ff=True, freeze_other=True):
         for name, p in self.gpt_model.named_parameters():
@@ -178,223 +242,3 @@ class BaseGPT2FusionBrain(nn.Module):
         print('            %:', round(common_params / all_params * 100, 2))
         print('trainable_params:', trainable_params)
         print('               %:', round(trainable_params / all_params * 100, 2))
-
-
-# вариант модели со слоями cross attention. img и text проходят через gpt независимо
-class CrossAttentionGPT2FusionBrain(BaseGPT2FusionBrain):
-
-    def __init__(self,
-                 gpt_model,
-                 attention_config,
-                 handwritten_config,
-                 vqa_config,
-                 detection_config,
-                 **freeze_gpt_kwargs):
-        super().__init__(gpt_model, handwritten_config, **freeze_gpt_kwargs)
-
-        ## zhOD[image, text] and VQA[image, text] layers:
-        self.attention_config = attention_config
-        self.backbone = ResnetBackbone(pretrained=True)
-        # переводит hidden state resnet18 в hidden state gpt2
-        self.input_proj = nn.Conv2d(self.backbone.num_channels, self.embedding_size, kernel_size=1)
-        # линейные слои после gpt2 для сведения img и text в одно пространоство признаков и подсчёта contrastive loss
-        self.text_projection = nn.Linear(self.embedding_size, self.embedding_size)
-        self.image_projection = nn.Linear(self.embedding_size, self.embedding_size)
-        self.cross_attention = nn.ModuleList([
-            CrossAttentionLayer(
-                self.embedding_size,
-                attention_config['num_heads'],
-                attention_config['pf_dim'],
-                attention_config['dropout']
-            )
-            for _ in range(attention_config['num_attention_layers'])
-        ])
-        #####
-
-        # detection[image, text] input/output layers:
-        self.detection_config = detection_config
-        self.max_boxes = detection_config['max_boxes']
-        # переводим hidden state в 4 координаты + вероятность наличия бокса
-        self.bbox_embed = MLP(self.embedding_size, self.embedding_size, 5, detection_config['num_mlp_layers'])
-        print('=== DETECTION TASK ===')
-        self._calculate_trainable_params([
-            self.backbone,
-            self.gpt_model,
-            self.input_proj,
-            self.cross_attention,
-            self.bbox_embed
-        ])
-        print('=== === === === ===')
-        #####
-
-        # vqa[image, text] input/output layers:
-        self.vqa_config = vqa_config
-        self.tokens_embed = nn.Linear(self.embedding_size, vqa_config['tokens_num'])
-        print('=== VQA TASK ===')
-        self._calculate_trainable_params([
-            self.backbone,
-            self.gpt_model,
-            self.input_proj,
-            self.cross_attention,
-            self.bbox_embed
-        ])
-        print('=== === === === ===')
-        #####
-
-        print('=== COMMON PARAMS ===')
-        self._calculate_common_params()
-        print('=== === === === ===')
-
-    def forward_vqa(self, images, tokens, attention_mask):
-        back_out = self.backbone(images)
-        patchs = self.input_proj(back_out).flatten(-2).transpose(-1, -2)
-        # Fusion Brain
-        img_embs = self.gpt_model(inputs_embeds=patchs).last_hidden_state
-        tokens_embs = self.gpt_model(input_ids=tokens, attention_mask=attention_mask).last_hidden_state
-        #####
-        img_embs = self.image_projection(img_embs)
-        tokens_embs = self.text_projection(tokens_embs)
-
-        norm_img_emb = F.normalize(img_embs.mean(-2), p=2, dim=-1)
-        norm_tokens_emb = F.normalize(tokens_embs.mean(-2), p=2, dim=-1)
-
-        for layer in self.cross_attention:
-            tokens_embs, _ = layer(tokens_embs, img_embs)
-
-        output_logits = self.tokens_embed(tokens_embs)
-        out = {
-            'pred_logits': output_logits,
-            'proj_queries': norm_img_emb,
-            'proj_tokens': norm_tokens_emb,
-        }
-
-        return out
-
-    def forward_detection(self, images, tokens, attention_mask):
-        back_out = self.backbone(images)
-        patchs = self.input_proj(back_out).flatten(-2).transpose(-1, -2)
-        # Fusion Brain
-        img_embs = self.gpt_model(inputs_embeds=patchs).last_hidden_state
-        tokens_embs = self.gpt_model(input_ids=tokens, attention_mask=attention_mask).last_hidden_state
-        #####
-        img_embs = self.image_projection(img_embs)
-        tokens_embs = self.text_projection(tokens_embs)
-
-        norm_img_emb = F.normalize(img_embs.mean(-2), p=2, dim=-1)
-        norm_tokens_emb = F.normalize(tokens_embs.mean(-2), p=2, dim=-1)
-
-        # берём последние max_boxes элементов последовательность как содержащих наибольшую информацию
-        # производим эту операцию до cross attention, так как там img_embs видят только текст
-        img_embs = img_embs[:, -self.max_boxes:]
-        text_masks = attention_mask.type(torch.bool)
-        for layer in self.cross_attention:
-            img_embs, _ = layer(img_embs, tokens_embs, ~text_masks)
-
-        output_logits = self.bbox_embed(img_embs).sigmoid()
-        out = {
-            'pred_classes': output_logits[:, :, -1],
-            'pred_boxes': output_logits[:, :, :-1],
-            'proj_queries': norm_img_emb,
-            'proj_tokens': norm_tokens_emb,
-        }
-
-        return out
-
-
-# вариант модели с пердварительным объединением img и text в одну последовательность
-class InverseAttentionGPT2FusionBrain(BaseGPT2FusionBrain):
-
-    def __init__(self,
-                 gpt_model,
-                 handwritten_config,
-                 vqa_config,
-                 detection_config,
-                 **freeze_gpt_kwargs):
-        super().__init__(gpt_model, handwritten_config, **freeze_gpt_kwargs)
-
-        ## zhOD[image, text] and VQA[image, text] layers:
-        self.backbone = ResnetBackbone(pretrained=True)
-        self.input_proj = nn.Conv2d(self.backbone.num_channels, self.embedding_size, kernel_size=1)
-        #####
-
-        # detection[image, text] input/output layers:
-        self.detection_config = detection_config
-        self.query_embed = nn.Embedding(detection_config['num_queries'], self.embedding_size)
-        self.class_embed = nn.Linear(self.embedding_size, 1)
-        self.bbox_embed = MLP(self.embedding_size, self.embedding_size, 4, detection_config['num_mlp_layers'])
-        print('=== DETECTION TASK ===')
-        self._calculate_trainable_params([
-            self.backbone,
-            self.gpt_model,
-            self.input_proj,
-            self.query_embed,
-            self.class_embed,
-            self.bbox_embed
-        ])
-        print('=== === === === ===')
-        #####
-
-        # vqa[image, text] input/output layers:
-        self.vqa_config = vqa_config
-        self.tokens_embed = nn.Linear(self.embedding_size, vqa_config['tokens_num'])
-        print('=== VQA TASK ===')
-        self._calculate_trainable_params([
-            self.backbone,
-            self.gpt_model,
-            self.input_proj,
-            self.bbox_embed
-        ])
-        print('=== === === === ===')
-        #####
-
-        print('=== COMMON PARAMS ===')
-        self._calculate_common_params()
-        print('=== === === === ===')
-
-    # для vqa первой идёт img, а затем text
-    def forward_vqa(self, images, tokens, attention_mask):
-        back_out = self.backbone(images)
-        img_embeddings = self.input_proj(back_out).flatten(-2).transpose(-1, -2)
-        tokens_embeddings = self.gpt_model.wte(tokens) + self.gpt_model.wpe(torch.arange(tokens.shape[1], device=tokens.device))
-
-        additiomal_attention_mask = torch.ones(
-            attention_mask.shape[0], img_embeddings.shape[1], dtype=attention_mask.dtype, device=attention_mask.device
-        )
-        attention_mask = torch.cat((additiomal_attention_mask, attention_mask), dim=1)
-        embedings = torch.cat((img_embeddings, tokens_embeddings), dim=1)
-        # Fusion Brain
-        gpt_out = self.gpt_model(inputs_embeds=embedings).last_hidden_state
-        #####
-        tokens_num = tokens.shape[1]
-        output_logits = self.tokens_embed(gpt_out[:, -tokens_num:])
-
-        return output_logits
-
-    # для zsod первым идёт text, а затем img
-    def forward_detection(self, images, tokens, attention_mask):
-        bs = images.shape[0]
-
-        back_out = self.backbone(images)
-        img_embeddings = self.input_proj(back_out).flatten(-2).transpose(-1, -2)
-        tokens_embeddings = self.gpt_model.wte(tokens) + self.gpt_model.wpe(torch.arange(tokens.shape[1], device=tokens.device))
-        box_embeddings = self.query_embed.weight.unsqueeze(0).repeat(bs, 1, 1)
-
-        additiomal_attention_mask = torch.ones(
-            bs, img_embeddings.shape[1] + box_embeddings.shape[1], dtype=attention_mask.dtype, device=attention_mask.device
-        )
-        attention_mask = torch.cat((attention_mask, additiomal_attention_mask), dim=1)
-        embedings = torch.cat((tokens_embeddings, img_embeddings, box_embeddings), dim=1)
-        # Fusion Brain
-        gpt_out = self.gpt_model(inputs_embeds=embedings, attention_mask=attention_mask).last_hidden_state
-        #####
-
-        # берём последние max_boxes элементов последовательность как содержащих наибольшую информацию
-        num_boxes = box_embeddings.shape[1]
-        output_classes = self.class_embed(gpt_out[:, -num_boxes:]).squeeze(-1).sigmoid()
-        output_boxes = self.bbox_embed(gpt_out[:, -num_boxes:]).sigmoid()
-        out = {
-            'pred_classes': output_classes,
-            'pred_boxes': output_boxes
-        }
-
-        return out

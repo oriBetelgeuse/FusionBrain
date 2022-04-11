@@ -1,0 +1,80 @@
+common:
+  image_size: 224
+
+data:
+  batch_size: 224
+  num_workers: 8
+  sampler_weights:
+    handwritten: 1.0
+    c2c: 1.0
+    vqa: 1.0
+    detection: 1.0
+  handwritten:
+    images: '/home/jovyan/vladimir/fusion_brain/data/handwritten/train_labels.json'
+    image_w: 512
+    image_h: 128
+  c2c:
+    code: '/home/jovyan/vladimir/fusion_brain/data/c2c/java-python.jsonl'
+    max_in_code_length: 300
+    max_out_code_length: 250
+  detection:
+    requests: "/home/jovyan/vladimir/fusion_brain/data/detection_vqa/zsod_requests.json"
+    images: "/home/jovyan/vladimir/fusion_brain/data/detection_vqa/images/"
+    max_request_tokens_length: 21
+  vqa:
+    questions: "/home/jovyan/vladimir/fusion_brain/data/detection_vqa/questions.json"
+    answers: "/home/jovyan/vladimir/fusion_brain/data/detection_vqa/answers.json"
+    images: "/home/jovyan/vladimir/fusion_brain/data/detection_vqa/images/"
+    max_question_tokens_length: 21
+    max_answer_tokens_length: 8
+
+model:
+  ctc_labeling_chars: "/home/jovyan/vladimir/fusion_brain/FusionBrain/fb_baseline/configs/ctc_chars.txt"
+  gpt_model: "gpt2-medium"
+  handwritten:
+      patch_w: 8
+      patch_h: 128
+      in_layer_sizes: [3072]
+      out_layer_sizes: [64]
+      orth_gain: 1.41
+      dropout: 0.1
+      lstm_num_layers: 3
+      output_dim: 90
+  detection:
+    num_mlp_layers: 3
+    num_queries: 12
+
+trainer:
+  gpus: 8
+  strategy: "ddp"
+  lr: 0.000008
+  max_lr: 0.001
+  pct_start: 0.1
+  final_div_factor: 1000
+  total_steps: 120000
+  weights_path: null
+  losses_weights:
+      detection: 1.
+      vqa: 1.
+  detection_losses: ['boxes', 'classification']
+  detection_losses_weights: [1., 1., 0.5]
+  freeze:
+    freeze_pos: false
+    freeze_ln: false
+    freeze_attn: false
+    freeze_ff: true
+    freeze_other: false
+
+logger:
+  commet:
+    save_dir: "/home/jovyan/vladimir/fusion_brain/experiments/fusion/logs"
+    project_name: "fusion-brain"
+    experiment_name: "fusion_1"
+
+model_checkpoint:
+  filename: "weight-{epoch:02d}"
+  monitor: "train_total_loss"
+  mode: "min"
+  save_top_k: 10
+  every_n_train_steps: 5000
+  dirpath: "/home/jovyan/vladimir/fusion_brain/experiments/fusion/checkpoints/"
