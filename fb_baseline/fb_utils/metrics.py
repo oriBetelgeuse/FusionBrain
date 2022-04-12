@@ -94,8 +94,9 @@ class VQAEval:
             resAns = self.processDigitArticle(resAns, lang)
 
             matchingAns = []
-            if resAns == true_ans:
-                matchingAns.append(resAns)
+            for ans in true_ans:
+                if resAns == ans:
+                    matchingAns.append(resAns)
 
             acc = min(1, float(len(matchingAns)))
             true_acc.append(acc)

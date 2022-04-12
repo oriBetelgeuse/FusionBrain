@@ -155,14 +155,14 @@ def run_train(conf):
 
     train_sampler = DistributedSamplerWrapper(
         sampler=WeightedRandomSampler(train_fusion_dataset.weights, len(train_fusion_dataset.weights)),
-        num_replicas=conf.data.world_size,
+        num_replicas=conf.trainer.gpus,
         rank=trainer.global_rank,
         shuffle=False
     )
 
     valid_sampler = DistributedSamplerWrapper(
         sampler=WeightedRandomSampler(valid_fusion_dataset.weights, len(valid_fusion_dataset.weights)),
-        num_replicas=conf.data.world_size,
+        num_replicas=conf.trainer.gpus,
         rank=trainer.global_rank,
         shuffle=False
     )

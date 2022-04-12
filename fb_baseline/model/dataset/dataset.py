@@ -91,7 +91,7 @@ class C2CDataset(Dataset):
             input_ids = input_tokens + output_tokens + [self.tokenizer.eos_token_id]
             attention_mask = [1] * len(input_ids)
 
-            pad_len = self.max_in_code_length + self.max_out_code_length - len(input_ids)
+            pad_len = self.max_in_code_length + self.max_out_code_length + 1 - len(input_ids)
             input_ids += [self.tokenizer.pad_token_id] * pad_len
             attention_mask += [0] * pad_len
             input_ids = torch.tensor(input_ids, dtype=torch.long)
@@ -149,8 +149,9 @@ class VQADataset(Dataset):
 
         question = "Question: " + self.questions[idx] + " Answer: "
         input_tokens = self.tokenizer.encode(question)
-        answer = self.answers[idx] + "."
+        answer = self.answers[idx]
         if self.stage == 'train' or self.stage == 'valid':
+            answer += "."
             output_tokens = self.tokenizer.encode(answer)
             input_tokens = input_tokens[:self.max_question_tokens_length]
             output_tokens = output_tokens[:self.max_answer_tokens_length]

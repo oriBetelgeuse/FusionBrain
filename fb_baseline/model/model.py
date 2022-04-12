@@ -42,9 +42,6 @@ class InverseAttentionGPT2FusionBrain(nn.Module):
         #####
 
         # code2code[code]
-        self.beam_size = 3
-        self.sos_id = self.gpt_model.config.bos_token_id
-        self.eos_id = self.gpt_model.config.eos_token_id
         self.lm_head = nn.Linear(self.gpt_model.config.n_embd, self.gpt_model.config.vocab_size, bias=False)
 
         print('=== C2C TASK ===')
@@ -89,7 +86,7 @@ class InverseAttentionGPT2FusionBrain(nn.Module):
 
         self.forward_tasks = {
             'handwritten': self.forward_handwritten,
-            'trans': self.forward_trans,
+            'c2c': self.forward_c2c,
             'vqa': self.forward_vqa,
             'detection': self.forward_detection,
         }
@@ -114,13 +111,12 @@ class InverseAttentionGPT2FusionBrain(nn.Module):
         x = self.handwritten_output_layer(x)
         return x
 
-    def forward_trans(self, input_ids, attention_mask):
+    def forward_c2c(self, input_ids, attention_mask=None, past_key_values=None):
         # Fusion Brain
-        gpt_out = self.gpt_model(input_ids, attention_mask=attention_mask).last_hidden_state
+        gpt_out = self.gpt_model(input_ids, attention_mask=attention_mask, past_key_values=past_key_values)
         #####
-        output_logits = self.lm_head(gpt_out)
-
-        return output_logits
+        output_logits = self.lm_head(gpt_out.last_hidden_state)
+        return output_logits, gpt_out[1]
 
     def forward_vqa(self, images, tokens, attention_mask):
         back_out = self.backbone(images)

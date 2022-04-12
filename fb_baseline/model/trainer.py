@@ -52,8 +52,8 @@ class InverseAttentionTrainer(pl.LightningModule):
         handwritten_loss = self.handwritten_criterion(preds, encoded, preds_size, encoded_length)
         return handwritten_loss
 
-    def trans_step(self, input_ids, attention_masks):
-        lm_logits = self.model('trans', input_ids=input_ids, attention_mask=attention_masks)
+    def c2c_step(self, input_ids, attention_masks):
+        lm_logits, _ = self.model('c2c', input_ids=input_ids, attention_mask=attention_masks)
         shift_logits = lm_logits[..., :-1, :].contiguous()
         shift_labels = input_ids[..., 1:].contiguous()
         c2c_loss = self.c2c_criterion(shift_logits.transpose(-1, -2), shift_labels)
@@ -85,7 +85,7 @@ class InverseAttentionTrainer(pl.LightningModule):
             losses.append(htr_loss)
 
         if len(code_input_ids) > 0:
-            c2c_loss = self.trans_step(code_input_ids, code_attention_masks)
+            c2c_loss = self.c2c_step(code_input_ids, code_attention_masks)
             metrics['c2c_loss'] = c2c_loss.detach().cpu().item()
             self.log(f'{stage}_c2c_loss', metrics['c2c_loss'], on_epoch=True, prog_bar=True, logger=True)
             losses.append(c2c_loss)

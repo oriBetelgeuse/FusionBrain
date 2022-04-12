@@ -18,7 +18,7 @@ def eval_bleu(model, hidden_states, input_ids, beam_size, tokenizer, targets, ma
             if beam.done():
                 break
             input_ids = beam.getCurrentState()
-            logits, hidden = model('trans', input_ids=input_ids, eval_bleu=True, past=past_hidden)
+            logits, hidden = model('c2c', input_ids=input_ids, past_key_values=past_hidden)
             out = m(logits[:, -1, :]).data
             beam.advance(out)
             transform_out = [torch.stack(x) for x in hidden]
