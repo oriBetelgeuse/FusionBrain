@@ -126,7 +126,6 @@ def run_train(conf):
     }
     train_fusion_dataset = FusionDataset(single_train_datasets, conf.data.sampler_weights)
     valid_fusion_dataset = FusionDataset(single_valid_datasets, conf.data.sampler_weights)
-
     # #
     # MODEL
     # #
@@ -151,7 +150,7 @@ def run_train(conf):
 
     trainer = pl.Trainer(gpus=conf.trainer.gpus, strategy=conf.trainer.strategy, max_steps=conf.trainer.total_steps,
                          check_val_every_n_epoch=1, replace_sampler_ddp=True, default_root_dir=conf.model_checkpoint.dirpath,
-                         logger=comet_logger, callbacks=callbacks, num_sanity_val_steps=0)
+                         logger=comet_logger, callbacks=callbacks, num_sanity_val_steps=0, accumulate_grad_batches=conf.trainer.accumulate_grad_batches)
 
     train_sampler = DistributedSamplerWrapper(
         sampler=WeightedRandomSampler(train_fusion_dataset.weights, len(train_fusion_dataset.weights)),
