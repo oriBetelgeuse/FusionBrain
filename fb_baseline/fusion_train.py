@@ -31,20 +31,16 @@ def run_train(conf):
         })
     df_handwritten = pd.DataFrame(marking)
     train_index, valid_index = train_test_split(df_handwritten, test_size=0.15)
-    df_handwritten_train = df_handwritten.loc[train_index.index.to_list()]
-    df_handwritten_train.index = pd.Index(range(df_handwritten_train.shape[0]))
-    df_handwritten_valid = df_handwritten.loc[valid_index.index.to_list()]
-    df_handwritten_valid.index = pd.Index(range(df_handwritten_valid.shape[0]))
+    df_handwritten_train = df_handwritten.loc[train_index.index.to_list()].reset_index(drop=True)
+    df_handwritten_valid = df_handwritten.loc[valid_index.index.to_list()].reset_index(drop=True)
     # #
     # C2C
     # #
     df_c2c = pd.read_json(conf.data.c2c.code, lines=True)
     df_c2c['task_ids'] = 'c2c'
     train_index, valid_index = train_test_split(df_c2c, test_size=0.15)
-    df_c2c_train = df_c2c.loc[train_index.index.to_list()]
-    df_c2c_train.index = pd.Index(range(df_c2c_train.shape[0]))
-    df_c2c_valid = df_c2c.loc[valid_index.index.to_list()]
-    df_c2c_valid.index = pd.Index(range(df_c2c_valid.shape[0]))
+    df_c2c_train = df_c2c.loc[train_index.index.to_list()].reset_index(drop=True)
+    df_c2c_valid = df_c2c.loc[valid_index.index.to_list()].reset_index(drop=True)
     # #
     # VQA
     # #
@@ -63,10 +59,8 @@ def run_train(conf):
             })
     df_vqa = pd.DataFrame(marking)
     train_index, valid_index = train_test_split(df_vqa, test_size=0.15)
-    df_vqa_train = df_vqa.loc[train_index.index.to_list()]
-    df_vqa_train.index = pd.Index(range(df_vqa_train.shape[0]))
-    df_vqa_valid = df_vqa.loc[valid_index.index.to_list()]
-    df_vqa_valid.index = pd.Index(range(df_vqa_valid.shape[0]))
+    df_vqa_train = df_vqa.loc[train_index.index.to_list()].reset_index(drop=True)
+    df_vqa_valid = df_vqa.loc[valid_index.index.to_list()].reset_index(drop=True)
     # #
     # Detection
     # #
@@ -83,10 +77,8 @@ def run_train(conf):
             })
     df_detection = pd.DataFrame(marking)
     train_index, valid_index = train_test_split(df_detection, test_size=0.15)
-    df_detection_train = df_detection.loc[train_index.index.to_list()]
-    df_detection_train.index = pd.Index(range(df_detection_train.shape[0]))
-    df_detection_valid = df_detection.loc[valid_index.index.to_list()]
-    df_detection_valid.index = pd.Index(range(df_detection_valid.shape[0]))
+    df_detection_train = df_detection.loc[train_index.index.to_list()].reset_index(drop=True)
+    df_detection_valid = df_detection.loc[valid_index.index.to_list()].reset_index(drop=True)
 
     task_augs = {
         'handwritten': A.Compose([
