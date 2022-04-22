@@ -323,8 +323,9 @@ def detection_collate_fn(batch):
         names.append(sample['image_name'])
     if batch:
         images = torch.stack(images)
-        input_ids = torch.stack(input_ids)
-        attention_masks = torch.stack(attention_masks)
+        if torch.is_tensor(input_ids[0]):
+            input_ids = torch.stack(input_ids)
+            attention_masks = torch.stack(attention_masks)
     return names, images, input_ids, attention_masks, boxes, size
 
 

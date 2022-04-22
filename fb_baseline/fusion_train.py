@@ -4,7 +4,7 @@ import json
 
 import pandas as pd
 import albumentations as A
-from sklearn.model_selection import StratifiedKFold, train_test_split
+from sklearn.model_selection import train_test_split
 import pytorch_lightning as pl
 from torch.utils.data import DataLoader, WeightedRandomSampler
 from catalyst.data import DistributedSamplerWrapper
